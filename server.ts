@@ -30,9 +30,12 @@ console.log(`  - DB_DATABASE: ${process.env.DB_DATABASE || '(not set)'}`);
 console.log(`  - DB_CONNECTION: ${process.env.DB_CONNECTION || '(not set)'}`);
 console.log(`  - DB_CLIENT: ${process.env.DB_CLIENT || '(not set)'}`);
 
-process.env.NODE_ENV = 'production';
 process.on('uncaughtException', (err) => {
+  // Do not keep serving after an uncaught throw: state (open transactions,
+  // leaked handles) is undefined at this point. Exit and let the platform
+  // restart the process cleanly.
   console.error('UNCAUGHT EXCEPTION:', err);
+  process.exit(1);
 });
 
 process.on('unhandledRejection', (err) => {
@@ -4026,7 +4029,16 @@ async function startServer() {
       res.sendFile(path.resolve(distPath, 'index.html'));
     });
   } else {
-    console.log('DEBUG: Skipping Vite middleware in production');
+    // Development: run Vite in middleware mode so the SPA is served with HMR on
+    // the same origin as /api (service/api.ts uses a relative '/api' base URL).
+    // Imported dynamically so vite is never pulled into the production process.
+    const { createServer: createViteServer } = await import('vite');
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
+    });
+    app.use(vite.middlewares);
+    console.log('DEBUG: Running in DEVELOPMENT mode - Vite middleware mounted (HMR enabled)');
   }
 
   // --- Live Stream State and Websocket Collections ---
@@ -4235,7 +4247,11 @@ async function startServer() {
       ws.on('message', (message: any) => {
         // Support BOTH raw binary JPEG frames AND string signaling packets (Hybrid Dual-Mode)
         if (Buffer.isBuffer(message) || message instanceof Uint8Array || message instanceof ArrayBuffer) {
-          latestFrameBuffer = Buffer.isBuffer(message) ? message : Buffer.from(message);
+          // Narrow explicitly: Buffer.from has no single overload accepting
+          // `ArrayBuffer | Uint8Array`, so hand it a Uint8Array either way.
+          latestFrameBuffer = Buffer.isBuffer(message)
+            ? message
+            : Buffer.from(message instanceof ArrayBuffer ? new Uint8Array(message) : message);
           latestFrameBase64 = `data:image/jpeg;base64,${latestFrameBuffer.toString('base64')}`;
           latestFrameTime = Date.now();
           

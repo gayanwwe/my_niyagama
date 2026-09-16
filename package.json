@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "node --import tsx server.ts",
+    "dev": "NODE_ENV=development node --import tsx server.ts",
     "build": "vite build",
     "start": "NODE_ENV=production npx tsx server.ts",
     "lint": "tsc --noEmit",
