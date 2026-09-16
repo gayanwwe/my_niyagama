@@ -1499,7 +1499,12 @@ async function startServer() {
         return res.status(401).json({ status: 'error', message: 'Invalid credentials' });
       }
 
-      const token = jwt.sign({ id: officer.id, username: officer.username, role: officer.role }, JWT_SECRET);
+      // Tokens previously never expired, so a stolen one was valid forever.
+      const token = jwt.sign(
+        { id: officer.id, username: officer.username, role: officer.role },
+        JWT_SECRET,
+        { expiresIn: (process.env.JWT_EXPIRES_IN || '8h') as jwt.SignOptions['expiresIn'] }
+      );
       
       // Remove pin from response
       const { pin: _, ...userWithoutPin } = officer;
@@ -1511,6 +1516,13 @@ async function startServer() {
   });
 
   // Generic Upload Endpoint (Images and Videos)
+  // Extensions that may be written into the publicly served uploads directory.
+  // The extension used to come straight from the caller-supplied filename, so an
+  // attacker could store .html/.svg/.js under our own origin and get stored XSS.
+  const ALLOWED_IMAGE_EXT = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
+  const ALLOWED_VIDEO_EXT = ['.mp4', '.webm', '.mov'];
+  const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
+
   apiRouter.post('/upload', authenticate, async (req, res) => {
     try {
       const { image, video, filename } = req.body;
@@ -1523,8 +1535,21 @@ async function startServer() {
       // Remove header from base64 string
       const base64Data = data.replace(/^data:[\w/]+;base64,/, "");
       const buffer = Buffer.from(base64Data, 'base64');
-      
-      const ext = filename ? path.extname(filename) : (image ? '.jpg' : '.mp4');
+
+      if (buffer.length > MAX_UPLOAD_BYTES) {
+        return res.status(413).json({ status: 'error', message: 'File exceeds the 20MB upload limit' });
+      }
+
+      const allowed = image ? ALLOWED_IMAGE_EXT : ALLOWED_VIDEO_EXT;
+      const requestedExt = filename ? path.extname(String(filename)).toLowerCase() : '';
+      if (requestedExt && !allowed.includes(requestedExt)) {
+        return res.status(400).json({
+          status: 'error',
+          message: `Unsupported file type '${requestedExt}'. Allowed: ${allowed.join(', ')}`,
+        });
+      }
+      const ext = requestedExt || (image ? '.jpg' : '.mp4');
+
       const uniqueFilename = `upload_${Date.now()}_${Math.round(Math.random() * 1E9)}${ext}`;
       const filePath = path.join(process.cwd(), 'public', 'uploads', uniqueFilename);
       
