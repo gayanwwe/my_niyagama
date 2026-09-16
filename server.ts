@@ -43,7 +43,18 @@ process.on('unhandledRejection', (err) => {
 });
 
 
-const JWT_SECRET = process.env.JWT_SECRET || 'niyagama_secret_key_123';
+// A hardcoded fallback secret meant anyone reading this file could forge an SA
+// token if JWT_SECRET was ever unset. Refuse to start in production instead;
+// in development, use a random per-process secret (tokens die on restart).
+const JWT_SECRET = (() => {
+  if (process.env.JWT_SECRET) return process.env.JWT_SECRET;
+  if (process.env.NODE_ENV === 'production') {
+    console.error('FATAL: JWT_SECRET is not set. Refusing to start in production.');
+    process.exit(1);
+  }
+  console.warn('[Auth] JWT_SECRET not set - generating an ephemeral development secret. Sessions will not survive a restart.');
+  return crypto.randomBytes(32).toString('hex');
+})();
 
 // Force MySQL connection if DB_HOST is present, since that is a clear indicator of a MySQL service
 const useMysql = !!process.env.DB_HOST || 
