@@ -1,0 +1,9 @@
+{
+  "name": "My Niyagama",
+  "description": "A comprehensive internal information system for Divisional Secretariat officers, featuring attendance tracking, productivity circles, and community recognition.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ]
+}
