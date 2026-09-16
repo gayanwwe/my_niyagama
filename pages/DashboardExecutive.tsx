@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
 import * as ReactRouterDom from "react-router-dom";
-import { GoogleGenAI } from "@google/genai";
 import { UserRole } from "../types";
 import type { Officer, ResourceBooking, Unavailability } from "../types";
 import { translations, TranslationKey } from "../service/i18n";

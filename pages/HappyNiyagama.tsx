@@ -1,10 +1,10 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { GoogleGenAI } from "@google/genai";
 import type { Officer } from '../types';
 import { api } from '../service/api';
 import { translations, TranslationKey } from '../service/i18n';
 import { Skeleton } from '../components/Skeleton';
+import { generateContent } from '../service/ai';
 
 interface Props {
   user: Officer;
@@ -87,14 +87,13 @@ const HappyNiyagama: React.FC<Props> = ({ user, lang }) => {
     if (!postText.trim() || isAiPolishing) return;
     setIsAiPolishing(true);
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const model = 'gemini-3-flash-preview';
       const prompt = `Act as an inspirational workplace communications expert. Rewrite this raw note into a professional, uplifting, and community-focused broadcast for a government divisional secretariat system. Keep it concise (max 3 sentences). 
       Original text: ${postText}
       Output in ${lang === 'SI' ? 'Sinhala' : 'English'}:`;
 
-      const result = await ai.models.generateContent({ model, contents: prompt });
-      if (result.text) setPostText(result.text.trim());
+      const text = await generateContent({ model, contents: prompt });
+      if (text) setPostText(text.trim());
     } catch (e) {
       console.error("AI Polish failed", e);
     } finally {

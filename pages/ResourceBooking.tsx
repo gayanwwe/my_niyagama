@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useMemo } from "react";
-import { GoogleGenAI } from "@google/genai";
 import type { Officer, Resource, ResourceBooking } from "../types";
 import { api } from "../service/api";
 import { Skeleton } from "../components/Skeleton";
+import { generateContent } from '../service/ai';
 
 interface Props {
   user: Officer;
@@ -158,14 +158,13 @@ const ResourceBookingPage: React.FC<Props> = ({ user, lang }) => {
 
     setIsAiLoading(true);
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const prompt = `Act as a divisional logistics optimizer. Current officer wants to go to ${dest} at ${start}. Look for other officers going to the same area to suggest ride-sharing. Context: 4 field officers currently booked today. Destination clusters: GN 43, GN 45, GN 47. Suggest carpool if relevant in ${lang === "SI" ? "Sinhala" : "English"}. Keep it short and encouraging.`;
 
-      const response = await ai.models.generateContent({
+      const text = await generateContent({
         model: "gemini-3-flash-preview",
         contents: prompt,
       });
-      setAiSuggestion(response.text || null);
+      setAiSuggestion(text || null);
     } catch (e) {
       setAiSuggestion(null);
     } finally {

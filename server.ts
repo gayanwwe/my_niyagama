@@ -5,8 +5,10 @@ import knex from 'knex';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import cors from 'cors';
+import rateLimit from 'express-rate-limit';
 import fs from 'fs';
 import crypto from 'crypto';
+import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
 import { calculateAttendanceStatus, timeToMins } from './src/lib/attendanceUtils';
 import type { Officer } from './types';
@@ -135,10 +137,40 @@ async function startServer() {
   const PORT = Number(process.env.PORT) || 3000;
   const apiRouter = express.Router();
 
-  app.use(cors());
-  app.use(express.json({ limit: '5gb' }));
-  app.use(express.urlencoded({ limit: '5gb', extended: true }));
+  // Restrict CORS to the app's own origin(s). CORS_ORIGIN accepts a
+  // comma-separated list; with none set we assume same-origin deployment.
+  const corsOrigins = (process.env.CORS_ORIGIN || '')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
+  app.use(cors(corsOrigins.length ? { origin: corsOrigins, credentials: true } : { origin: false }));
+
+  // A 5gb body limit let a single request exhaust the server's memory, since
+  // express buffers the whole body before the handler runs. Uploads are
+  // base64 JSON, so they need headroom, but nowhere near that much.
+  app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '25mb' }));
+  app.use(express.urlencoded({ limit: process.env.JSON_BODY_LIMIT || '25mb', extended: true }));
   app.use(express.static(path.join(process.cwd(), 'public')));
+
+  // --- RATE LIMITERS ---
+  // PINs are short, so an unthrottled /login is brute-forceable in minutes.
+  const loginLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { status: 'error', message: 'Too many login attempts. Please try again later.' },
+  });
+
+  // The AI proxy spends real money per call; cap per-user usage.
+  const aiLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 20,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req: any) => String(req.user?.id || req.ip),
+    message: { status: 'error', message: 'Too many AI requests. Please slow down.' },
+  });
   
   // Request Logging Middleware
   app.use((req, res, next) => {
@@ -1455,7 +1487,7 @@ async function startServer() {
   await ensureTables();
 
   // --- AUTH ROUTES ---
-  apiRouter.post('/login', async (req, res) => {
+  apiRouter.post('/login', loginLimiter, async (req, res) => {
     const { username, pin } = req.body;
     try {
       const officer = await db('officers')
@@ -1503,6 +1535,56 @@ async function startServer() {
     } catch (error: any) {
       console.error('Upload error:', error);
       res.status(500).json({ status: 'error', message: error.message });
+    }
+  });
+
+  // --- AI PROXY ---
+  // The Gemini API key stays on the server. It used to be inlined into the
+  // client bundle by vite's `define`, which handed it to anyone who opened
+  // DevTools on the deployed site.
+  const ALLOWED_AI_MODELS = ['gemini-1.5-flash', 'gemini-3-flash-preview', 'gemini-3-pro-preview'];
+  const AI_CONFIG_FIELDS = [
+    'temperature', 'topK', 'topP', 'maxOutputTokens',
+    'thinkingConfig', 'responseMimeType', 'responseSchema', 'systemInstruction',
+  ];
+  const MAX_AI_PROMPT_CHARS = 32000;
+
+  apiRouter.post('/ai/generate', authenticate, aiLimiter, async (req: any, res) => {
+    if (!process.env.GEMINI_API_KEY) {
+      return res.status(503).json({ status: 'error', message: 'AI service is not configured on the server' });
+    }
+
+    const { model, contents, config } = req.body || {};
+
+    if (typeof contents !== 'string' || !contents.trim()) {
+      return res.status(400).json({ status: 'error', message: 'A non-empty `contents` string is required' });
+    }
+    if (contents.length > MAX_AI_PROMPT_CHARS) {
+      return res.status(413).json({ status: 'error', message: 'Prompt is too long' });
+    }
+
+    // Never pass a caller-supplied model straight through: allowlist it.
+    const chosenModel = ALLOWED_AI_MODELS.includes(model) ? model : ALLOWED_AI_MODELS[0];
+
+    const safeConfig: any = {};
+    if (config && typeof config === 'object') {
+      for (const key of AI_CONFIG_FIELDS) {
+        if (config[key] !== undefined) safeConfig[key] = config[key];
+      }
+    }
+
+    try {
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      const result = await ai.models.generateContent({
+        model: chosenModel,
+        contents,
+        ...(Object.keys(safeConfig).length ? { config: safeConfig } : {}),
+      });
+      res.json({ status: 'success', data: { text: result.text || '' } });
+    } catch (error: any) {
+      // Log server-side; do not leak provider error detail (or key state) to the client.
+      console.error(`[AI] generateContent failed for officer ${req.user?.id}:`, error.message);
+      res.status(502).json({ status: 'error', message: 'The AI service could not complete this request.' });
     }
   });
 

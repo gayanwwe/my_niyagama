@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { GoogleGenAI } from "@google/genai";
 import { 
   AreaChart, 
   Area, 
@@ -18,6 +17,7 @@ import type { Officer } from '../types';
 import { api } from '../service/api';
 import { Skeleton } from '../components/Skeleton';
 import ChartErrorBoundary from '../components/ChartErrorBoundary';
+import { generateContent } from '../service/ai';
 
 interface Props {
   user: Officer;
@@ -53,8 +53,6 @@ const ExecutiveIntelligence: React.FC<Props> = ({ user, lang }) => {
   const runAiAnalysis = async (data: any) => {
     setIsAiLoading(true);
     try {
-      // Use "ai" as variable name per guidelines
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY as string });
       const model = 'gemini-1.5-flash';
       
       const prompt = `Act as the Chief Strategic Advisor to a Sri Lankan Divisional Secretary. 
@@ -74,16 +72,16 @@ const ExecutiveIntelligence: React.FC<Props> = ({ user, lang }) => {
       - Tone: Authoritative, Executive, Insightful.
       - Formatting: Use professional headers and concise bullet points.`;
 
-      const result = await ai.models.generateContent({
-        model: model,
+      const text = await generateContent({
+        model,
         contents: prompt,
-        config: { 
+        config: {
           thinkingConfig: { thinkingBudget: 2000 },
-          temperature: 0.1 
+          temperature: 0.1
         }
       });
 
-      setAiReport(result.text || "Diagnostic analysis temporarily unavailable.");
+      setAiReport(text || "Diagnostic analysis temporarily unavailable.");
     } catch (e: any) {
       setAiReport(`Intelligence Engine Error: ${e.message}`);
     } finally {

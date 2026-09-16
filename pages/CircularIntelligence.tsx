@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { GoogleGenAI } from "@google/genai";
 import type { Officer, Circular } from '../types';
 import { api } from '../service/api';
 import { Skeleton } from '../components/Skeleton';
+import { generateContent } from '../service/ai';
 
 interface Props {
   user: Officer;
@@ -71,8 +71,6 @@ const CircularIntelligence: React.FC<Props> = ({ user, lang }) => {
     setIsAiLoading(true);
 
     try {
-      // Use "ai" as variable name per guidelines
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       // Using gemini-3-pro-preview for deep administrative reasoning
       const model = 'gemini-3-pro-preview';
       
@@ -82,8 +80,8 @@ const CircularIntelligence: React.FC<Props> = ({ user, lang }) => {
 
       const prompt = `${context}\n\nQuestion: ${userMsg.content}\n\nAnswer in ${lang === 'SI' ? 'Sinhala' : 'English'}:`;
 
-      const response = await ai.models.generateContent({
-        model: model,
+      const text = await generateContent({
+        model,
         contents: prompt,
         config: {
           temperature: 0.1, // Low temperature for high accuracy in official rules
@@ -92,7 +90,7 @@ const CircularIntelligence: React.FC<Props> = ({ user, lang }) => {
         }
       });
 
-      const aiMsg: Message = { role: 'AI', content: response.text || 'Error generating response.' };
+      const aiMsg: Message = { role: 'AI', content: text || 'Error generating response.' };
       setChatHistory(prev => [...prev, aiMsg]);
     } catch (e: any) {
       const errorMsg: Message = { role: 'AI', content: `Intelligence Service Error: ${e.message}` };

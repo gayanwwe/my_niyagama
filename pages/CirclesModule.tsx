@@ -1,12 +1,12 @@
 
 import React, { useState, useMemo, useRef, useEffect } from 'react';
-import { GoogleGenAI } from "@google/genai";
 import type { Officer, Circle, CircleProject, ProjectTask, TaskUpdate, TaskPriority } from '../types';
 import { api } from '../service/api';
 import { Radar, RadarChart, PolarGrid, PolarAngleAxis, ResponsiveContainer, Radar as ReRadar } from 'recharts';
 import { CardSkeleton } from '../components/Skeleton';
 import { translations, TranslationKey } from '../service/i18n';
 import ChartErrorBoundary from '../components/ChartErrorBoundary';
+import { generateContent } from '../service/ai';
 
 interface Props {
   user: Officer;
@@ -198,10 +198,9 @@ const CirclesModule: React.FC<Props> = ({ user, lang }) => {
     if (!activeTask || activeTask.updates.length === 0) return;
     setIsAiLoading(true);
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const prompt = `Act as a senior divisional secretariat administrator. Analyze task updates for: ${activeTask.title}. Provide Summary, Challenges, and Next Steps in ${lang === 'SI' ? 'Sinhala' : 'English'}. Log: ${JSON.stringify(activeTask.updates.map(u => u.content))}`;
-      const response = await ai.models.generateContent({ model: 'gemini-3-flash-preview', contents: prompt });
-      alert(response.text || "AI analysis unavailable."); 
+      const text = await generateContent({ model: 'gemini-3-flash-preview', contents: prompt });
+      alert(text || "AI analysis unavailable."); 
     } catch (e) {
       alert("AI Service Error.");
     } finally {
