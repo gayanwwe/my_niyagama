@@ -12,3 +12,7 @@ services:
         generateValue: true
       - key: PORT
         value: 3000
+      # Set this in the Render dashboard, not here. It is read by the server at
+      # runtime for /api/ai/generate; it is no longer baked into the client bundle.
+      - key: GEMINI_API_KEY
+        sync: false
