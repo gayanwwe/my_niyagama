@@ -25,5 +25,22 @@
     },
     "allowImportingTsExtensions": true,
     "noEmit": true
-  }
+  },
+  "include": [
+    "*.ts",
+    "*.tsx",
+    "components/**/*",
+    "pages/**/*",
+    "routes/index.ts",
+    "service/**/*",
+    "src/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "istu",
+    "webrtc-signaling-server",
+    "public",
+    "storage"
+  ]
 }

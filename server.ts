@@ -6,6 +6,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import cors from 'cors';
 import fs from 'fs';
+import crypto from 'crypto';
 import dotenv from 'dotenv';
 import { calculateAttendanceStatus, timeToMins } from './src/lib/attendanceUtils';
 import type { Officer } from './types';
@@ -147,6 +148,57 @@ async function startServer() {
     next();
   });
 
+  // --- AUTH MIDDLEWARE ---
+  // Declared before any route registration so that routes defined earlier in
+  // this file (e.g. /setup-db) can reference it without hitting the TDZ.
+  const authenticate = (req: any, res: any, next: any) => {
+    const authHeader = req.headers.authorization || req.headers['x-authorization'];
+    if (!authHeader) {
+      console.log(`[Auth] Missing auth header for ${req.method} ${req.url}`);
+      return res.status(401).json({ status: 'error', message: 'Unauthenticated' });
+    }
+
+    const token = authHeader.split(' ')[1];
+    jwt.verify(token, JWT_SECRET, (err: any, decoded: any) => {
+      if (err) {
+        console.log(`[Auth] Token verification failed: ${err.message}`);
+        return res.status(401).json({ status: 'error', message: 'Invalid token' });
+      }
+      req.user = decoded;
+      next();
+    });
+  };
+
+  // Roles permitted to administer staff records and system configuration.
+  const ADMIN_ROLES = ['SA', 'ADMIN', 'IT'];
+
+  // Columns on `officers` that an administrator may set through the staff API.
+  // `pin`, `username` and `biometric_id` are handled separately (hashing and
+  // uniqueness checks); `id` and timestamps are never writable.
+  const OFFICER_WRITABLE_FIELDS = [
+    'name', 'post', 'department', 'role', 'work_type', 'is_field_officer',
+    'official_phone', 'profile_pic', 'address', 'bio', 'birthday', 'join_date',
+    'dashboard_status', 'eta',
+  ];
+
+  const pickOfficerFields = (body: any) => {
+    const out: any = {};
+    for (const key of OFFICER_WRITABLE_FIELDS) {
+      if (body[key] !== undefined) out[key] = body[key];
+    }
+    return out;
+  };
+
+  // Role gate. Always mount after `authenticate`, which populates req.user.
+  const requireRole = (...roles: string[]) => (req: any, res: any, next: any) => {
+    if (!req.user || !roles.includes(req.user.role)) {
+      console.log(`[Auth] Role '${req.user?.role}' denied for ${req.method} ${req.url}`);
+      return res.status(403).json({ status: 'error', message: 'Forbidden: insufficient privileges' });
+    }
+    next();
+  };
+
+
   // Ensure uploads directory exists
   const uploadsDir = path.join(process.cwd(), 'public', 'uploads');
   if (!fs.existsSync(uploadsDir)) {
@@ -211,7 +263,7 @@ async function startServer() {
   }
 
   // --- DATABASE SETUP ROUTE ---
-  apiRouter.post('/setup-db', async (req, res) => {
+  apiRouter.post('/setup-db', authenticate, requireRole('SA'), async (req, res) => {
     try {
       console.log('Initializing Database...');
       
@@ -1426,43 +1478,6 @@ async function startServer() {
     }
   });
 
-  apiRouter.get('/me', (req, res) => {
-    const authHeader = req.headers.authorization;
-
-    if (!authHeader) {
-      return res.status(401).json({ error: 'No token provided' });
-    }
-
-    const token = authHeader.split(' ')[1];
-
-    try {
-      const decoded = jwt.verify(token, JWT_SECRET);
-      return res.json({ user: decoded });
-    } catch (err) {
-      return res.status(401).json({ error: 'Invalid token' });
-    }
-  });
-
-  // Middleware to verify token
-  const authenticate = (req: any, res: any, next: any) => {
-    console.log(`[Auth] Checking token for ${req.method} ${req.url}`);
-    const authHeader = req.headers.authorization || req.headers['x-authorization'];
-    if (!authHeader) {
-      console.log('[Auth] Missing auth header');
-      return res.status(401).json({ status: 'error', message: 'Unauthenticated' });
-    }
-    
-    const token = authHeader.split(' ')[1];
-    jwt.verify(token, JWT_SECRET, (err: any, decoded: any) => {
-      if (err) {
-        console.log(`[Auth] Token verification failed: ${err.message}`);
-        return res.status(401).json({ status: 'error', message: 'Invalid token' });
-      }
-      req.user = decoded;
-      next();
-    });
-  };
-
   // Generic Upload Endpoint (Images and Videos)
   apiRouter.post('/upload', authenticate, async (req, res) => {
     try {
@@ -2333,9 +2348,12 @@ async function startServer() {
     }
   });
 
-  apiRouter.post('/staff', authenticate, async (req, res) => {
+  apiRouter.post('/staff', authenticate, requireRole(...ADMIN_ROLES), async (req, res) => {
     try {
-      const { pin, biometric_id, username, ...rest } = req.body;
+      const { pin, biometric_id, username } = req.body;
+      // Only these columns may be set from the request body. Anything else
+      // (id, timestamps, arbitrary columns) is ignored rather than mass-assigned.
+      const rest = pickOfficerFields(req.body);
       
       // Handle empty biometric_id
       const bioId = (biometric_id && biometric_id.trim()) ? biometric_id.trim() : null;
@@ -2356,20 +2374,33 @@ async function startServer() {
         }
       }
 
-      const hashedPin = await bcrypt.hash(pin || '1234', 10);
+      // Never fall back to a shared well-known PIN. If the caller supplies none,
+      // generate a random one and return it once so it can be handed to the officer.
+      const generatedPin = pin ? null : String(crypto.randomInt(100000, 1000000));
+      const hashedPin = await bcrypt.hash(pin || generatedPin, 10);
       const [id] = await db('officers').insert({ ...rest, username, biometric_id: bioId, pin: hashedPin });
       const officer = await db('officers').where('id', id).first();
       const { pin: _, ...userWithoutPin } = officer;
-      res.json({ status: 'success', data: userWithoutPin });
+      res.json({ status: 'success', data: { ...userWithoutPin, generated_pin: generatedPin } });
     } catch (error: any) {
       res.status(500).json({ status: 'error', message: error.message });
     }
   });
   
-  apiRouter.put('/staff/:id', authenticate, async (req, res) => {
+  apiRouter.put('/staff/:id', authenticate, requireRole(...ADMIN_ROLES), async (req: any, res) => {
     try {
-      const { pin, biometric_id, username, id, created_at, updated_at, ...rest } = req.body;
-      const updateData: any = { ...rest };
+      const { pin, biometric_id, username } = req.body;
+      // Explicit allowlist: prevents mass-assignment of `id`, timestamps, or any
+      // column a caller invents. `role` is included but guarded separately below.
+      const updateData: any = pickOfficerFields(req.body);
+
+      // Only an SA may change a role, and nobody may change their own.
+      if (updateData.role !== undefined) {
+        const targetIsSelf = String(req.user.id) === String(req.params.id);
+        if (req.user.role !== 'SA' || targetIsSelf) {
+          delete updateData.role;
+        }
+      }
       
       if (username) {
         const existingUsername = await db('officers').where('username', username).whereNot('id', req.params.id).first();
@@ -2394,7 +2425,12 @@ async function startServer() {
         }
       }
 
+      // Resetting someone else's PIN is an SA-only action; officers change their
+      // own via /me/change-password, which verifies the current PIN first.
       if (pin) {
+        if (req.user.role !== 'SA') {
+          return res.status(403).json({ status: 'error', message: 'Only a System Administrator may reset a PIN' });
+        }
         updateData.pin = await bcrypt.hash(pin, 10);
       }
       await db('officers').where('id', req.params.id).update(updateData);
@@ -2406,8 +2442,11 @@ async function startServer() {
     }
   });
   
-  apiRouter.delete('/staff/:id', authenticate, async (req, res) => {
+  apiRouter.delete('/staff/:id', authenticate, requireRole('SA'), async (req: any, res) => {
     try {
+      if (String(req.user.id) === String(req.params.id)) {
+        return res.status(400).json({ status: 'error', message: 'You cannot delete your own account' });
+      }
       await db('officers').where('id', req.params.id).del();
       res.json({ status: 'success', data: {} });
     } catch (error: any) {
