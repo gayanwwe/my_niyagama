@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import type { Officer, LeaveRequest } from '../types';
 import { api } from '../service/api';
 import { Skeleton } from '../components/Skeleton';
+import { z } from 'zod';
+import { toast } from 'react-hot-toast';
 
 interface Props {
   user: Officer;
@@ -25,6 +27,21 @@ const LeaveModule: React.FC<Props> = ({ user, lang }) => {
     reason: ''
   });
 
+  // Zod schema for leave form validation
+  const leaveFormSchema = z.object({
+    type: z.enum(['CASUAL', 'SICK', 'VACATION', 'DUTY', 'SHORT_LEAVE', 'HALF_DAY']),
+    sub_type: z.enum(['AM', 'PM']).default('AM'),
+    start_date: z.string().date(),
+    end_date: z.string().date(),
+    reason: z.string().min(1, 'Reason is required')
+  });
+
+  // Parse form state with Zod schema
+  const parseForm = (formState: any) => {
+    const result = leaveFormSchema.safeParse(formState);
+    return result.success ? result.data : null;
+  };
+
   useEffect(() => {
     loadData();
   }, []);
@@ -45,11 +62,70 @@ const LeaveModule: React.FC<Props> = ({ user, lang }) => {
     }
   };
 
+  // Calculate leave duration in days for balance checking
+  const calculateLeaveDays = (type: string, start: string, end: string): number => {
+    const s = new Date(start);
+    const e = new Date(end);
+    const diffDays = Math.floor((e.getTime() - s.getTime()) / (1000 * 60 * 60 * 24));
+    
+    if (type === 'CASUAL' || type === 'VACATION') {
+      return diffDays + 1; // inclusive counting
+    }
+    if (type === 'SICK') {
+      return 1; // Sick leave typically 1 day at a time
+    }
+    if (type === 'HALF_DAY') {
+      return 0.5;
+    }
+    if (type === 'SHORT_LEAVE') {
+      return 0; // 2 SL = 1 casual day, handled in balance calc
+    }
+    return 0;
+  };
+
   const handleApply = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSaving(true);
+    
+    // Zod validation
+    const parsedForm = parseForm(form);
+    if (!parsedForm) {
+      toast.error('Please fill in all required fields correctly.');
+      setIsSaving(false);
+      return;
+    }
+    
+    // Validate date range: end_date must be >= start_date
+    if (new Date(parsedForm.end_date) < new Date(parsedForm.start_date)) {
+      toast.error('End date must be after start date.');
+      setIsSaving(false);
+      return;
+    }
+    
+    // Calculate days and check balance before submitting
+    const days = calculateLeaveDays(parsedForm.type, parsedForm.start_date, parsedForm.end_date);
+    
+    // Client-side balance check
+    if (balances) {
+      let available = 0;
+      
+      if (parsedForm.type === 'CASUAL') {
+        available = (balances.casual_total || 21) - (balances.casual || 0);
+      } else if (parsedForm.type === 'SICK') {
+        available = (balances.sick_total || 7) - (balances.sick || 0);
+      } else if (parsedForm.type === 'VACATION') {
+        available = (balances.vacation_total || 21) - (balances.vacation || 0);
+      }
+      
+      if (days > 0 && days > available) {
+        toast.error(`Insufficient ${parsedForm.type.toLowerCase()} leave balance. Available: ${available} days, Requested: ${days} days.`);
+        setIsSaving(false);
+        return;
+      }
+    }
+    
     try {
-      await api.applyForLeave(form);
+      await api.applyForLeave(parsedForm);
       await loadData();
       setIsModalOpen(false);
       setForm({
@@ -59,8 +135,9 @@ const LeaveModule: React.FC<Props> = ({ user, lang }) => {
         end_date: new Date().toISOString().split('T')[0],
         reason: ''
       });
+      toast.success('Leave application submitted successfully!');
     } catch (e: any) {
-      alert(e.message);
+      toast.error(e.message || 'Application failed');
     } finally {
       setIsSaving(false);
     }
@@ -140,17 +217,17 @@ const LeaveModule: React.FC<Props> = ({ user, lang }) => {
                     </td>
                     <td className="p-8">
                        <div className="text-xs font-bold text-slate-600">
-                         {req.start_date} <span className="text-slate-300 px-1">→</span> {req.end_date}
+                          {req.start_date} <span className="text-slate-300 px-1">→</span> {req.end_date}
                        </div>
                     </td>
                     <td className="p-8">
                        <p className="text-xs text-slate-500 font-medium max-w-xs truncate" title={req.reason}>
-                         {req.reason}
+                          {req.reason}
                        </p>
                     </td>
                     <td className="p-8">
                        <span className={`px-4 py-1.5 rounded-full text-[9px] font-black border uppercase tracking-widest ${getStatusStyle(req.status)}`}>
-                         {req.status}
+                          {req.status}
                        </span>
                     </td>
                     <td className="p-8 text-right">
@@ -167,96 +244,98 @@ const LeaveModule: React.FC<Props> = ({ user, lang }) => {
       {isModalOpen && (
         <div className="fixed inset-0 z-[100] bg-slate-900/40 backdrop-blur-md flex items-center justify-center p-4 animate-fade-in">
            <div className="bg-white w-full max-w-xl rounded-[3.5rem] shadow-2xl overflow-hidden flex flex-col border border-white/20">
-             <header className="px-10 py-8 bg-slate-50 border-b flex justify-between items-center">
-                <div>
-                   <h3 className="text-2xl font-black text-slate-900 tracking-tighter">New Leave Request</h3>
-                   <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Submit for Executive Review</p>
-                </div>
-                <button onClick={() => setIsModalOpen(false)} className="p-3 hover:bg-slate-200 rounded-full transition-colors">
-                   <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-                </button>
-             </header>
+              <header className="px-10 py-8 bg-slate-50 border-b flex justify-between items-center">
+                 <div>
+                    <h3 className="text-2xl font-black text-slate-900 tracking-tighter">New Leave Request</h3>
+                    <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Submit for Executive Review</p>
+                 </div>
+                 <button onClick={() => setIsModalOpen(false)} className="p-3 hover:bg-slate-200 rounded-full transition-colors">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                 </button>
+              </header>
 
-             <form onSubmit={handleApply} className="p-10 space-y-6">
-                <div className="space-y-1.5">
-                   <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Leave Category</label>
-                   <select 
-                    value={form.type} 
-                    onChange={e => setForm({...form, type: e.target.value as any})}
-                    className="w-full p-4 bg-slate-50 rounded-2xl font-bold border-none outline-none focus:ring-2 focus:ring-[#1877F2]/20"
-                   >
-                     <option value="CASUAL">Casual Leave</option>
-                     <option value="SICK">Sick Leave</option>
-                     <option value="VACATION">Vacation / Annual</option>
-                     <option value="DUTY">Official Duty (Field/Training)</option>
-                     <option value="SHORT_LEAVE">Short Leave (90 Min)</option>
-                     <option value="HALF_DAY">Half Day</option>
-                   </select>
-                </div>
+              <form onSubmit={handleApply} className="p-10 space-y-6">
+                 <div className="space-y-1.5">
+                    <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Leave Category</label>
+                    <select 
+                     value={form.type} 
+                     onChange={e => setForm({...form, type: e.target.value as any})}
+                     className="w-full p-4 bg-slate-50 rounded-2xl font-bold border-none outline-none focus:ring-2 focus:ring-[#1877F2]/20"
+                    >
+                      <option value="CASUAL">Casual Leave</option>
+                      <option value="SICK">Sick Leave</option>
+                      <option value="VACATION">Vacation / Annual</option>
+                      <option value="DUTY">Official Duty (Field/Training)</option>
+                      <option value="SHORT_LEAVE">Short Leave (90 Min)</option>
+                      <option value="HALF_DAY">Half Day</option>
+                    </select>
+                    <span className="text-[9px] text-slate-500 ml-2">{form.type === 'HALF_DAY' ? '(AM/PM required)' : ''}</span>
+                 </div>
 
-                {(form.type === 'SHORT_LEAVE' || form.type === 'HALF_DAY') && (
-                  <div className="space-y-1.5 px-1">
-                     <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Time Slot</label>
-                     <div className="flex gap-4">
-                       {['AM', 'PM'].map(slot => (
-                         <button
-                           key={slot}
-                           type="button"
-                           onClick={() => setForm({...form, sub_type: slot as any, end_date: form.start_date})}
-                           className={`flex-1 py-4 rounded-2xl font-black uppercase text-[10px] tracking-widest transition-all ${
-                             form.sub_type === slot ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'bg-slate-50 text-slate-400 hover:bg-slate-100'
-                           }`}
-                         >
-                           {slot === 'AM' ? t('පෙ.ව.', 'Morning (AM)') : t('ප.ව.', 'Evening (PM)')}
-                         </button>
-                       ))}
-                     </div>
-                  </div>
-                )}
-
-                <div className="grid grid-cols-2 gap-6">
-                   <div className="space-y-1.5">
-                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Start Date</label>
-                      <input 
-                        type="date" 
-                        required 
-                        value={form.start_date}
-                        onChange={e => setForm({...form, start_date: e.target.value})}
-                        className="w-full p-4 bg-slate-50 rounded-2xl font-bold border-none outline-none focus:ring-2 focus:ring-[#1877F2]/20"
-                      />
+                 {(form.type === 'SHORT_LEAVE' || form.type === 'HALF_DAY') && (
+                   <div className="space-y-1.5 px-1">
+                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Time Slot</label>
+                      <div className="flex gap-4">
+                        {['AM', 'PM'].map(slot => (
+                          <button
+                            key={slot}
+                            type="button"
+                            onClick={() => setForm({...form, sub_type: slot as any, end_date: form.start_date})}
+                            className={`flex-1 py-4 rounded-2xl font-black uppercase text-[10px] tracking-widest transition-all ${
+                              form.sub_type === slot ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'bg-slate-50 text-slate-400 hover:bg-slate-100'
+                            }`}
+                          >
+                            {slot === 'AM' ? t('පෙ.ව.', 'Morning (AM)') : t('ප.ව.', 'Evening (PM)')}
+                          </button>
+                        ))}
+                      </div>
                    </div>
-                   <div className="space-y-1.5">
-                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">End Date</label>
-                      <input 
-                        type="date" 
-                        required 
-                        value={form.end_date}
-                        onChange={e => setForm({...form, end_date: e.target.value})}
-                        className="w-full p-4 bg-slate-50 rounded-2xl font-bold border-none outline-none focus:ring-2 focus:ring-[#1877F2]/20"
-                      />
-                   </div>
-                </div>
+                 )}
 
-                <div className="space-y-1.5">
-                   <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Reason for Absence</label>
-                   <textarea 
-                    required 
-                    value={form.reason}
-                    onChange={e => setForm({...form, reason: e.target.value})}
-                    rows={4}
-                    placeholder="Briefly describe the purpose of your leave..."
-                    className="w-full p-5 bg-slate-50 rounded-2xl font-medium text-sm border-none outline-none focus:ring-2 focus:ring-[#1877F2]/20 shadow-inner"
-                   />
-                </div>
+                 <div className="grid grid-cols-2 gap-6">
+                    <div className="space-y-1.5">
+                       <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Start Date</label>
+                       <input 
+                         type="date" 
+                         required 
+                         value={form.start_date}
+                         onChange={e => setForm({...form, start_date: e.target.value})}
+                         className="w-full p-4 bg-slate-50 rounded-2xl font-bold border-none outline-none focus:ring-2 focus:ring-[#1877F2]/20"
+                       />
+                    </div>
+                    <div className="space-y-1.5">
+                       <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">End Date</label>
+                       <input 
+                         type="date" 
+                         required 
+                         value={form.end_date}
+                         onChange={e => setForm({...form, end_date: e.target.value})}
+                         className="w-full p-4 bg-slate-50 rounded-2xl font-bold border-none outline-none focus:ring-2 focus:ring-[#1877F2]/20"
+                       />
+                       <span className="text-[9px] text-slate-500 ml-2">Must be after start date</span>
+                    </div>
+                 </div>
 
-                <button 
-                  disabled={isSaving}
-                  className="w-full py-5 bg-[#1877F2] text-white rounded-[2rem] font-black uppercase text-xs tracking-widest shadow-2xl mt-4"
-                >
-                  {isSaving ? 'Submitting Application...' : 'Send Application'}
-                </button>
-             </form>
-           </div>
+                 <div className="space-y-1.5">
+                    <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Reason for Absence</label>
+                    <textarea 
+                     required 
+                     value={form.reason}
+                     onChange={e => setForm({...form, reason: e.target.value})}
+                     rows={4}
+                     placeholder="Briefly describe the purpose of your leave..."
+                     className="w-full p-5 bg-slate-50 rounded-2xl font-medium text-sm border-none outline-none focus:ring-2 focus:ring-[#1877F2]/20 shadow-inner"
+                    />
+                 </div>
+
+                 <button 
+                   disabled={isSaving}
+                   className="w-full py-5 bg-[#1877F2] text-white rounded-[2rem] font-black uppercase text-xs tracking-widest shadow-2xl mt-4"
+                 >
+                   {isSaving ? 'Submitting Application...' : 'Send Application'}
+                 </button>
+              </form>
+            </div>
         </div>
       )}
     </div>

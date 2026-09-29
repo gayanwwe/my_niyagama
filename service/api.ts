@@ -148,6 +148,12 @@ export class ApiClient {
   async uploadProfilePic(file: File) { 
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
+      reader.onprogress = ((event: ProgressEvent) => {
+        if (event.lengthComputable && arguments[1]) {
+          const progress = Math.round((event.loaded / event.total) * 100);
+          arguments[1](progress);
+        }
+      });
       reader.onload = async () => {
         try {
           const base64 = reader.result as string;

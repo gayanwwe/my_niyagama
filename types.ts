@@ -12,7 +12,7 @@ export enum UserRole {
 
 export interface Officer {
   id: number | string;
-  bio_id: string;
+  biometric_id: string;  // Aligned with DB column biometric_id
   name: string;
   designation: string;
   role: UserRole;
@@ -23,13 +23,12 @@ export interface Officer {
   department?: string;
   official_phone?: string;
   address?: string;
-  biometric_id?: string;
+  bio?: string;  // Keep bio as alias for backward compatibility, but DB uses bio
   designation_id?: number | string;
   designation_name?: string;
   department_id?: number | string;
   work_type?: string;
   username?: string;
-  bio?: string;
   pending_profile_pic?: string;
   birthday?: string;
   join_date?: string;

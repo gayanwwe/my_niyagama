@@ -209,18 +209,19 @@ const DashboardOfficer: React.FC<Props> = ({ user, lang }) => {
 
   const loadInitialData = async () => {
     try {
-      const [settingsData, attData, leaves, publicDashboardResult] = await Promise.all([
+      const [settingsData, attData, leaves, balancesData, publicDashboardResult] = await Promise.all([
         api.getDivisionalSettings(),
         api.getAttendance(),
         api.getMyLeaves(),
+        api.getLeaveBalances().catch(() => ({ data: { casual: 0, sick: 0, vacation: 0, casual_total: 21, sick_total: 7, vacation_total: 21, short_leave_count: 0, half_day_count: 0 } })),
         api.getPublicDashboardData().catch(() => ({ status: 'error', data: { events: [], birthdays: [] } }))
       ]);
       setSettings(settingsData);
       if (attData) setAttendance(attData);
       
-      const approvedLeaves = leaves.filter(l => l.status === 'APPROVED');
-      const taken = approvedLeaves.length; // Simplified: 1 request = 1 day for now
-      setLeaveStats({ taken, remaining: 42 - taken });
+      const balancesRes = balancesData.data || { casual: 0, sick: 0, vacation: 0, casual_total: 21, sick_total: 7, vacation_total: 21, short_leave_count: 0, half_day_count: 0 };
+      const taken = balancesRes.casual + balancesRes.sick + balancesRes.vacation;
+      setLeaveStats({ taken, remaining: (balancesRes.casual_total || 21) - balancesRes.casual });
 
       if (publicDashboardResult && publicDashboardResult.status === 'success') {
         const d = publicDashboardResult.data || {};
