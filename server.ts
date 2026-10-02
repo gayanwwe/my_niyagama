@@ -223,6 +223,11 @@ async function startServer() {
   // server is the enforcement point, since the client check is only a UI hint.
   const APPROVER_ROLES = ['SA', 'ADMIN', 'EXECUTIVE', 'EX', 'CHIEF_CLERK', 'LEAVE_OFFICER', 'IT'];
 
+  // Sunday = 0 ... Saturday = 6. Sri Lankan divisional secretariats work
+  // Monday to Friday; override with the `non_working_weekdays` setting (a
+  // comma-separated list, or an empty string to treat every day as working).
+  const DEFAULT_NON_WORKING_WEEKDAYS = [0, 6];
+
   // Columns on `officers` that an administrator may set through the staff API.
   // `pin`, `username` and `biometric_id` are handled separately (hashing and
   // uniqueness checks); `id` and timestamps are never writable.
@@ -792,6 +797,19 @@ async function startServer() {
           console.error(`Non-critical failure adding column ${col.name} to officers:`, err);
         }
       }
+    }
+
+    // Key/value application settings. `dashboard_settings` is a single-row
+    // columnar table for the public display; GET /settings read it as if it
+    // were key/value, so it could only ever return its hardcoded defaults.
+    const hasAppSettings = await db.schema.hasTable('app_settings');
+    if (!hasAppSettings) {
+      await db.schema.createTable('app_settings', (table) => {
+        table.bigIncrements('id');
+        table.string('key').unique();
+        table.text('value').nullable();
+        table.timestamps(true, true);
+      });
     }
 
     const hasUnavailability = await db.schema.hasTable('unavailability');
@@ -2148,21 +2166,50 @@ async function startServer() {
       const startDate = `${y}-${String(m).padStart(2, '0')}-01`;
       const endDate = `${y}-${String(m).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`;
 
+      const calendar = await loadLeaveCalendar();
+
       const officers = await db('officers').select('id', 'name', 'post');
       const attendance = await db('attendance')
         .whereBetween('date', [startDate, endDate])
         .select('officer_id', 'date', 'status');
 
+      // Approved leave lives in its own table and never reached this grid, so
+      // an officer on sanctioned leave was shown as ABSENT.
+      const approvedLeaves = await db('leaves')
+        .where('status', 'APPROVED')
+        .where('start_date', '<=', endDate)
+        .where('end_date', '>=', startDate)
+        .select('officer_id', 'start_date', 'end_date', 'type');
+
       const registry = officers.map(officer => {
         const days: Record<number, string> = {};
         for (let i = 1; i <= daysInMonth; i++) {
-          days[i] = 'ABSENT';
+          const key = `${y}-${String(m).padStart(2, '0')}-${String(i).padStart(2, '0')}`;
+          // Weekends and public holidays are not absences. HOLIDAY and
+          // NON_WORKING are rendered distinctly by the registry grid.
+          if (calendar.isHoliday(key)) days[i] = 'HOLIDAY';
+          else if (!calendar.isWorkingDay(key)) days[i] = 'NON_WORKING';
+          else days[i] = 'ABSENT';
         }
 
+        // Overlay approved leave first, so a real attendance scan still wins.
+        approvedLeaves
+          .filter(l => String(l.officer_id) === String(officer.id))
+          .forEach(l => {
+            calendar.workingDaysIn(l.start_date, l.end_date).forEach(key => {
+              if (key >= startDate && key <= endDate) {
+                days[Number(key.slice(8, 10))] = 'LEAVE';
+              }
+            });
+          });
+
         attendance
-          .filter(a => a.officer_id === officer.id)
+          // Compared as strings: the two drivers disagree on whether a BIGINT
+          // comes back as a number or a string, and a strict === against the
+          // wrong type silently rendered the whole month as ABSENT.
+          .filter(a => String(a.officer_id) === String(officer.id))
           .forEach(a => {
-            const day = new Date(a.date).getDate();
+            const day = Number(toDateKey(a.date).slice(8, 10));
             days[day] = a.status;
           });
 
@@ -2686,22 +2733,57 @@ async function startServer() {
     }
   });
   
+  const SETTING_DEFAULTS: Record<string, string> = {
+    work_start_time: '08:30',
+    work_end_time: '16:15',
+    grace_period_minutes: '15',
+    // Sunday = 0 ... Saturday = 6. Days not worked by this division; a leave
+    // spanning them is not charged. Empty string = a seven-day operation.
+    non_working_weekdays: DEFAULT_NON_WORKING_WEEKDAYS.join(','),
+  };
+
   apiRouter.get('/settings', authenticate, async (req, res) => {
     try {
-      const settings = await db('dashboard_settings').select('*');
+      // Reads app_settings, a real key/value table. This used to read
+      // dashboard_settings, which is single-row and columnar, so s.key and
+      // s.value were always undefined and only the defaults were ever returned.
+      const settings = await db('app_settings').select('key', 'value');
       const settingsMap: Record<string, string> = {};
-      settings.forEach(s => {
-        settingsMap[s.key] = s.value;
+      settings.forEach((s: any) => {
+        if (s.key) settingsMap[s.key] = s.value;
       });
-      
-      // Provide defaults if missing
-      const defaults = {
-        work_start_time: '08:30',
-        work_end_time: '16:15',
-        grace_period_minutes: '15'
-      };
 
-      res.json({ status: 'success', data: { ...defaults, ...settingsMap } });
+      res.json({ status: 'success', data: { ...SETTING_DEFAULTS, ...settingsMap } });
+    } catch (error: any) {
+      res.status(500).json({ status: 'error', message: error.message });
+    }
+  });
+
+  apiRouter.put('/settings', authenticate, requireRole(...ADMIN_ROLES), async (req: any, res) => {
+    try {
+      const updates = req.body || {};
+      const keys = Object.keys(updates).filter((k) => k in SETTING_DEFAULTS);
+      if (keys.length === 0) {
+        return res.status(400).json({
+          status: 'error',
+          message: `No known settings supplied. Accepted keys: ${Object.keys(SETTING_DEFAULTS).join(', ')}`,
+        });
+      }
+
+      for (const key of keys) {
+        const value = String(updates[key] ?? '');
+        const existing = await db('app_settings').where('key', key).first();
+        if (existing) {
+          await db('app_settings').where('key', key).update({ value, updated_at: db.fn.now() });
+        } else {
+          await db('app_settings').insert({ key, value });
+        }
+      }
+
+      const settings = await db('app_settings').select('key', 'value');
+      const settingsMap: Record<string, string> = {};
+      settings.forEach((s: any) => { if (s.key) settingsMap[s.key] = s.value; });
+      res.json({ status: 'success', data: { ...SETTING_DEFAULTS, ...settingsMap } });
     } catch (error: any) {
       res.status(500).json({ status: 'error', message: error.message });
     }
@@ -2832,6 +2914,66 @@ async function startServer() {
     return keys;
   };
 
+  // --- WORKING-DAY CALENDAR ---
+  // Leave is counted in working days. Saturdays, Sundays and public holidays
+  // falling inside a leave period are not charged against an entitlement; the
+  // calculation used to count every calendar day, so a Friday-to-Tuesday
+  // absence cost five days instead of three.
+
+  interface LeaveCalendar {
+    isWorkingDay: (dateKey: string) => boolean;
+    isHoliday: (dateKey: string) => boolean;
+    workingDaysIn: (start: any, end: any) => string[];
+  }
+
+  const getSetting = async (key: string): Promise<string | null> => {
+    try {
+      const row = await db('app_settings').where('key', key).first();
+      return row && typeof row.value === 'string' ? row.value : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const loadLeaveCalendar = async (): Promise<LeaveCalendar> => {
+    let nonWorkingWeekdays = DEFAULT_NON_WORKING_WEEKDAYS;
+    const configured = await getSetting('non_working_weekdays');
+    if (typeof configured === 'string') {
+      // An explicit empty value means a seven-day operation. Note Number('')
+      // is 0, not NaN, so the empty case has to be handled before parsing or
+      // it silently reads as "Sunday is non-working".
+      nonWorkingWeekdays = configured.trim() === ''
+        ? []
+        : configured
+            .split(',')
+            .map((n: string) => Number(n.trim()))
+            .filter((n: number) => Number.isInteger(n) && n >= 0 && n <= 6);
+    }
+
+    // The holidays table is small (a few dozen rows per year), so load it once
+    // rather than querying per leave request.
+    let holidays = new Set<string>();
+    try {
+      const rows = await db('holidays').select('date');
+      holidays = new Set(rows.map((r: any) => toDateKey(r.date)));
+    } catch {
+      // No holidays table yet; weekends alone still apply.
+    }
+
+    const isWorkingDay = (dateKey: string) => {
+      if (holidays.has(dateKey)) return false;
+      const d = new Date(`${dateKey}T00:00:00`);
+      if (Number.isNaN(d.getTime())) return false;
+      return !nonWorkingWeekdays.includes(d.getDay());
+    };
+
+    return {
+      isWorkingDay,
+      isHoliday: (dateKey: string) => holidays.has(dateKey),
+      workingDaysIn: (start: any, end: any) => eachDateKey(start, end).filter(isWorkingDay),
+    };
+  };
+
   /**
    * An officer's leave usage for a year, reconciling both ledgers:
    * approved requests in `leaves`, and days the attendance ledger marks as
@@ -2840,6 +2982,8 @@ async function startServer() {
   const computeLeaveBalances = async (officerId: any, year: number = new Date().getFullYear()) => {
     const startOfYear = `${year}-01-01`;
     const endOfYear = `${year}-12-31`;
+
+    const calendar = await loadLeaveCalendar();
 
     const [approvedLeaves, attendanceLeaves] = await Promise.all([
       db('leaves')
@@ -2873,8 +3017,10 @@ async function startServer() {
     const shortLeavesPerMonth: Record<string, number> = {};
 
     for (const leave of approvedLeaves) {
-      // Only days falling inside this year count against this year's entitlement.
-      const daysInYear = eachDateKey(leave.start_date, leave.end_date)
+      // Only working days inside this year count against this year's
+      // entitlement: weekends and public holidays inside a leave are free.
+      const daysInYear = calendar
+        .workingDaysIn(leave.start_date, leave.end_date)
         .filter((k) => k >= startOfYear && k <= endOfYear);
       daysInYear.forEach((k) => coveredDates.add(k));
       const n = daysInYear.length;
@@ -2901,6 +3047,7 @@ async function startServer() {
     for (const row of attendanceLeaves) {
       const key = toDateKey(row.date);
       if (coveredDates.has(key)) continue; // already charged via an approved request
+      if (!calendar.isWorkingDay(key)) continue; // a weekend or holiday costs nothing
       if (row.status === 'LEAVE') {
         balances.casual += 1;
       } else if (row.status === 'HALF_DAY') {
@@ -2922,13 +3069,14 @@ async function startServer() {
     return balances;
   };
 
-  /** Days a prospective request would consume, by entitlement bucket. */
-  const leaveRequestCost = (type: string, startDate: any, endDate: any): number => {
-    const n = eachDateKey(startDate, endDate).length;
-    if (type === 'HALF_DAY') return 0.5;
-    if (type === 'SHORT_LEAVE') return 0; // charged via the per-month conversion
+  /** Working days a prospective request would consume, by entitlement bucket. */
+  const leaveRequestCost = (type: string, startDate: any, endDate: any, calendar: LeaveCalendar): number => {
+    const workingDays = calendar.workingDaysIn(startDate, endDate);
     if (type === 'DUTY') return 0;        // consumes no entitlement
-    return n;
+    if (type === 'SHORT_LEAVE') return 0; // charged via the per-month conversion
+    // A half day on a non-working day costs nothing.
+    if (type === 'HALF_DAY') return workingDays.length > 0 ? 0.5 : 0;
+    return workingDays.length;
   };
 
   apiRouter.get('/leaves/balances', authenticate, async (req: any, res) => {
@@ -2965,9 +3113,20 @@ async function startServer() {
         return res.status(400).json({ status: 'error', message: 'end_date must be the same as or after start_date' });
       }
 
+      // A range made up entirely of weekends and holidays consumes nothing, so
+      // there is nothing to apply for; say so rather than filing an empty request.
+      const calendar = await loadLeaveCalendar();
+      const workingDays = calendar.workingDaysIn(start_date, end_date);
+      if (workingDays.length === 0 && type !== 'DUTY') {
+        return res.status(400).json({
+          status: 'error',
+          message: 'That period contains no working days (weekends and public holidays are not deducted).',
+        });
+      }
+
       // Same arithmetic the balance endpoint reports, so the two never disagree.
       const balances = await computeLeaveBalances(req.user.id);
-      const cost = leaveRequestCost(type, start_date, end_date);
+      const cost = leaveRequestCost(type, start_date, end_date, calendar);
 
       const bucket: Record<string, { used: number; total: number; label: string }> = {
         CASUAL: { used: balances.casual, total: balances.casual_total, label: 'casual' },

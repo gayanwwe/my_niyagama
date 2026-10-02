@@ -340,6 +340,7 @@ const BiometricManagement: React.FC<Props> = ({ user, lang }) => {
       case 'HALF_DAY': return 'bg-pink-500';
       case 'SHORT_LEAVE': return 'bg-orange-500';
       case 'HOLIDAY': return 'bg-yellow-400';
+      case 'NON_WORKING': return 'bg-slate-200';  // weekend: not an absence
       case 'LATE': return 'bg-amber-500';
       case 'LEAVE': return 'bg-red-500';
       default: return 'bg-slate-100';
