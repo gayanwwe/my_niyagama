@@ -228,6 +228,21 @@ async function startServer() {
   // comma-separated list, or an empty string to treat every day as working).
   const DEFAULT_NON_WORKING_WEEKDAYS = [0, 6];
 
+  /**
+   * Normalises a date from either driver to 'YYYY-MM-DD'. sqlite3 returns DATE
+   * columns as strings, mysql2 returns JS Date objects at local midnight.
+   */
+  const toDateKey = (value: any): string => {
+    if (value instanceof Date) {
+      const y = value.getFullYear();
+      const m = String(value.getMonth() + 1).padStart(2, '0');
+      const d = String(value.getDate()).padStart(2, '0');
+      return `${y}-${m}-${d}`;
+    }
+    return String(value).slice(0, 10);
+  };
+
+
   // Columns on `officers` that an administrator may set through the staff API.
   // `pin`, `username` and `biometric_id` are handled separately (hashing and
   // uniqueness checks); `id` and timestamps are never writable.
@@ -1952,173 +1967,294 @@ async function startServer() {
     }
   });
 
+  /**
+   * Imports biometric punches.
+   *
+   * Rewritten to work in bulk. It previously ran about six queries per log row,
+   * all awaited in sequence - an officer lookup, a duplicate check, an insert,
+   * an attendance lookup, a monthly-stats aggregate and a write - so a month of
+   * data for a modest division meant tens of thousands of sequential
+   * round-trips. It now issues three reads up front, computes everything in
+   * memory, and writes in batches inside a transaction.
+   */
   apiRouter.post('/attendance/import', authenticate, async (req, res) => {
     try {
       const { logs } = req.body;
-      
+
       if (!Array.isArray(logs)) {
         return res.status(400).json({ status: 'error', message: 'Invalid logs format' });
       }
+      if (logs.length === 0) {
+        return res.json({ status: 'success', message: 'No logs supplied.' });
+      }
 
-      let newLogsCount = 0;
-      let syncedCount = 0;
-      let errorCount = 0;
-
+      const startedAt = Date.now();
       console.log(`[AttendanceImport] Starting import of ${logs.length} logs`);
 
+      const chunk = <T>(arr: T[], size: number): T[][] => {
+        const out: T[][] = [];
+        for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+        return out;
+      };
+
+      const timeToSeconds = (t: any): number => {
+        const [h, m, sec] = String(t).split(':').map(Number);
+        if (!Number.isFinite(h) || !Number.isFinite(m)) return NaN;
+        return h * 3600 + m * 60 + (Number.isFinite(sec) ? sec : 0);
+      };
+
+      const normalizeDate = (raw: any): string | null => {
+        if (raw === null || raw === undefined) return null;
+        const parts = String(raw).trim().split(/[-/]/);
+        if (parts.length !== 3) return null;
+        let y: string, m: string, d: string;
+        if (parts[0].length === 4) [y, m, d] = parts;            // YYYY-MM-DD
+        else if (parts[2].length === 4) [d, m, y] = parts;       // DD-MM-YYYY
+        else return null;
+        const key = `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
+        return /^\d{4}-\d{2}-\d{2}$/.test(key) ? key : null;
+      };
+
+      // --- 1. Normalise and validate every row in memory ---
+      interface Punch { bioId: string; date: string; time: string }
+      const punches: Punch[] = [];
+      const failures: string[] = [];
+
       for (const log of logs) {
-        try {
-          // 1. Normalize date format (expects YYYY-MM-DD)
-          let normalizedDate = log.date;
-          const dateParts = log.date.split(/[-/]/);
-          if (dateParts.length === 3) {
-            if (dateParts[0].length === 4) {
-              // YYYY-MM-DD or YYYY/MM/DD
-              normalizedDate = `${dateParts[0]}-${dateParts[1].padStart(2, '0')}-${dateParts[2].padStart(2, '0')}`;
-            } else if (dateParts[2].length === 4) {
-              // DD-MM-YYYY or DD/MM/YYYY
-              normalizedDate = `${dateParts[2]}-${dateParts[1].padStart(2, '0')}-${dateParts[0].padStart(2, '0')}`;
-            }
-          }
+        const bioId = log?.bioId === null || log?.bioId === undefined ? '' : String(log.bioId).trim();
+        const date = normalizeDate(log?.date);
+        const time = log?.timeIn === null || log?.timeIn === undefined ? '' : String(log.timeIn).trim();
+        if (!bioId || !date || !time || Number.isNaN(timeToSeconds(time))) {
+          failures.push(`bioId=${bioId || '?'} date=${log?.date ?? '?'} time=${log?.timeIn ?? '?'}`);
+          continue;
+        }
+        punches.push({ bioId, date, time });
+      }
 
-          // 2. Find officer associated with this biometric ID
-          const officer = await db('officers').where('biometric_id', log.bioId).first();
-          
-          // 3. Check if biometric log already exists
-          const existingLog = await db('biometric_logs')
-            .where({
-              hardware_id: log.bioId,
-              scan_date: normalizedDate,
-              scan_time: log.timeIn
-            })
-            .first();
+      if (punches.length === 0) {
+        return res.status(422).json({
+          status: 'error',
+          message: `None of the ${logs.length} rows could be read.`,
+          failures: failures.slice(0, 20),
+        });
+      }
 
-          if (!existingLog) {
-            newLogsCount++;
-            await db('biometric_logs').insert({
-              hardware_id: log.bioId,
-              scan_date: normalizedDate,
-              scan_time: log.timeIn,
-              status: officer ? 'SYNCED' : 'UNMAPPED'
-            });
-          } else if (officer && existingLog.status === 'UNMAPPED') {
-            // If it was unmapped but now we have an officer, update it
-            await db('biometric_logs')
-              .where('id', existingLog.id)
-              .update({ status: 'SYNCED' });
-          }
+      const bioIds = [...new Set(punches.map((p) => p.bioId))];
+      const sortedDates = punches.map((p) => p.date).sort();
+      const minDate = sortedDates[0];
+      const maxDate = sortedDates[sortedDates.length - 1];
 
-          // 4. If officer found, sync to attendance ledger (even if log already existed)
-          // This allows re-importing to fix missing attendance records
-          if (officer) {
-            // Update dashboard status to AVAILABLE if scan is today
-            const today = new Date().toISOString().split('T')[0];
-            if (normalizedDate === today) {
-              await db('officers').where('id', officer.id).update({ 
-                dashboard_status: 'AVAILABLE',
-                eta: null,
-                updated_at: db.fn.now()
-              });
-            }
+      // --- 2. Two reads: every officer and every existing log in range ---
+      const [officerRows, existingLogRows] = await Promise.all([
+        db('officers').whereIn('biometric_id', bioIds),
+        db('biometric_logs')
+          .whereIn('hardware_id', bioIds)
+          .whereBetween('scan_date', [minDate, maxDate])
+          .select('id', 'hardware_id', 'scan_date', 'scan_time', 'status'),
+      ]);
 
-            const existingAttendance = await db('attendance')
-              .where({ officer_id: officer.id, date: normalizedDate })
-              .first();
+      const officerByBio = new Map<string, any>();
+      for (const o of officerRows) officerByBio.set(String(o.biometric_id).trim(), o);
 
-            if (existingAttendance) {
-              const updates: any = {};
-              
-              const timeToSeconds = (t: string) => {
-                const [h, m, s] = t.split(':').map(Number);
-                return h * 3600 + m * 60 + (s || 0);
-              };
+      const logKey = (hw: any, date: any, time: any) => `${String(hw).trim()}|${toDateKey(date)}|${String(time).trim()}`;
+      const existingLogMap = new Map<string, any>();
+      for (const r of existingLogRows) existingLogMap.set(logKey(r.hardware_id, r.scan_date, r.scan_time), r);
 
-              const logTimeSec = timeToSeconds(log.timeIn);
-              const inTimeSec = timeToSeconds(existingAttendance.time_in);
-              
-              let effectiveIn = existingAttendance.time_in;
-              let effectiveOut = existingAttendance.time_out || existingAttendance.time_in;
+      // --- 3. Work out the biometric_logs writes ---
+      const logsToInsert: any[] = [];
+      const logIdsToPromote: any[] = [];
+      const seenInPayload = new Set<string>();
+      const unmappedBioIds = new Set<string>();
 
-              if (logTimeSec < inTimeSec) {
-                updates.time_in = log.timeIn;
-                effectiveIn = log.timeIn;
-              }
-              
-              const currentMaxTime = existingAttendance.time_out || existingAttendance.time_in;
-              const maxTimeSec = timeToSeconds(currentMaxTime);
+      for (const p of punches) {
+        const key = logKey(p.bioId, p.date, p.time);
+        if (seenInPayload.has(key)) continue; // the same punch repeated in one file
+        seenInPayload.add(key);
 
-              // Reduced threshold from 7200 to 600 seconds (10 mins) to capture "off to field" logs
-              if (logTimeSec > maxTimeSec && (logTimeSec - inTimeSec) > 600) {
-                updates.time_out = log.timeIn;
-                effectiveOut = log.timeIn;
-              }
+        const officer = officerByBio.get(p.bioId);
+        if (!officer) unmappedBioIds.add(p.bioId);
 
-              // Calculate monthly stats for grace days and short leaves
-              const monthStart = `${normalizedDate.substring(0, 7)}-01`;
-              const monthEnd = `${normalizedDate.substring(0, 7)}-31`;
-              const monthlyStats = await db('attendance')
-                .where('officer_id', officer.id)
-                .whereBetween('date', [monthStart, monthEnd])
-                .whereNot('date', normalizedDate) // Exclude current day to calculate correctly
-                .select('status', 'grace_day_used');
-              
-              const graceUsed = monthlyStats.filter(s => s.grace_day_used).length;
-              const slUsed = monthlyStats.filter(s => s.status === 'SHORT_LEAVE').length;
-
-              const { status, shortLeaveMinutesUsed, graceDayUsed } = calculateAttendanceStatus(
-                effectiveIn, 
-                effectiveOut, 
-                officer, 
-                graceUsed, 
-                slUsed,
-                normalizedDate
-              );
-
-              updates.status = status;
-              updates.short_leave_minutes = shortLeaveMinutesUsed || 0;
-              updates.grace_day_used = !!graceDayUsed;
-
-              if (Object.keys(updates).length > 0) {
-                console.log(`[AttendanceImport] Updating record for ${officer.name} on ${normalizedDate}:`, updates);
-                await db('attendance')
-                  .where('id', existingAttendance.id)
-                  .update(updates);
-                syncedCount++;
-              }
-            } else {
-              // Create new attendance record
-              console.log(`[AttendanceImport] Creating new record for ${officer.name} on ${normalizedDate} at ${log.timeIn}`);
-              
-              const { status, shortLeaveMinutesUsed, graceDayUsed } = calculateAttendanceStatus(
-                log.timeIn, 
-                log.timeIn, 
-                officer, 
-                0, // Initially 0, logic handles same-day updates later
-                0,
-                normalizedDate
-              );
-
-              await db('attendance').insert({
-                officer_id: officer.id,
-                date: normalizedDate,
-                time_in: log.timeIn,
-                status: status,
-                short_leave_minutes: shortLeaveMinutesUsed || 0,
-                grace_day_used: !!graceDayUsed
-              });
-              syncedCount++;
-            }
-          }
-        } catch (err) {
-          console.error(`[AttendanceImport] Error processing log for BioID ${log.bioId}:`, err);
-          errorCount++;
+        const existing = existingLogMap.get(key);
+        if (!existing) {
+          logsToInsert.push({
+            hardware_id: p.bioId,
+            scan_date: p.date,
+            scan_time: p.time,
+            status: officer ? 'SYNCED' : 'UNMAPPED',
+          });
+        } else if (officer && existing.status === 'UNMAPPED') {
+          logIdsToPromote.push(existing.id);
         }
       }
 
-      res.json({ 
-        status: 'success', 
-        message: `${newLogsCount} new logs ingested. ${syncedCount} attendance records updated/created. ${errorCount} errors.` 
+      // --- 4. Group every punch by officer and day ---
+      const byOfficerDay = new Map<string, { officer: any; date: string; times: string[] }>();
+      for (const p of punches) {
+        const officer = officerByBio.get(p.bioId);
+        if (!officer) continue; // unmapped: the raw log is kept, no attendance row
+        const key = `${officer.id}|${p.date}`;
+        let entry = byOfficerDay.get(key);
+        if (!entry) {
+          entry = { officer, date: p.date, times: [] };
+          byOfficerDay.set(key, entry);
+        }
+        entry.times.push(p.time);
+      }
+
+      // --- 5. One read for existing attendance, over the whole affected months ---
+      const affectedOfficerIds = [...new Set([...byOfficerDay.values()].map((e) => e.officer.id))];
+      const monthStart = `${minDate.slice(0, 7)}-01`;
+      // Real last day of the month. The old code built `YYYY-MM-31`, which is
+      // not a valid date for February or any 30-day month; MySQL could not
+      // compare against it, so the monthly grace / short-leave limits silently
+      // stopped being enforced in those months.
+      const lastDayOfMaxMonth = new Date(Number(maxDate.slice(0, 4)), Number(maxDate.slice(5, 7)), 0).getDate();
+      const monthEnd = `${maxDate.slice(0, 7)}-${String(lastDayOfMaxMonth).padStart(2, '0')}`;
+
+      const existingAttendance = affectedOfficerIds.length
+        ? await db('attendance').whereIn('officer_id', affectedOfficerIds).whereBetween('date', [monthStart, monthEnd])
+        : [];
+
+      const attendanceByKey = new Map<string, any>();
+      const monthlyUsage = new Map<string, { grace: Set<string>; shortLeave: Set<string> }>();
+      const usageFor = (officerId: any, dateKey: string) => {
+        const key = `${officerId}|${dateKey.slice(0, 7)}`;
+        let entry = monthlyUsage.get(key);
+        if (!entry) {
+          entry = { grace: new Set(), shortLeave: new Set() };
+          monthlyUsage.set(key, entry);
+        }
+        return entry;
+      };
+
+      for (const row of existingAttendance) {
+        const dateKey = toDateKey(row.date);
+        attendanceByKey.set(`${row.officer_id}|${dateKey}`, row);
+        const usage = usageFor(row.officer_id, dateKey);
+        if (row.grace_day_used) usage.grace.add(dateKey);
+        if (row.status === 'SHORT_LEAVE') usage.shortLeave.add(dateKey);
+      }
+
+      // --- 6. Compute every status in memory, oldest day first so the monthly
+      //        grace and short-leave allowances accumulate in the right order ---
+      const attendanceToInsert: any[] = [];
+      const attendanceToUpdate: { id: any; values: any }[] = [];
+      const todayKey = new Date().toLocaleDateString('en-CA');
+      const officersSeenToday = new Set<any>();
+
+      const entries = [...byOfficerDay.values()].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+
+      for (const entry of entries) {
+        const key = `${entry.officer.id}|${entry.date}`;
+        const existing = attendanceByKey.get(key);
+
+        // Sorting the day's punches makes the result independent of the order
+        // the device exported them in. Processing them in file order used to
+        // leave time_out unset whenever the evening row came first.
+        const allTimes = [...entry.times];
+        if (existing?.time_in) allTimes.push(String(existing.time_in));
+        if (existing?.time_out) allTimes.push(String(existing.time_out));
+
+        const sorted = [...new Set(allTimes)]
+          .filter((t) => !Number.isNaN(timeToSeconds(t)))
+          .sort((a, b) => timeToSeconds(a) - timeToSeconds(b));
+        if (sorted.length === 0) continue;
+
+        const timeIn = sorted[0];
+        const lastTime = sorted[sorted.length - 1];
+        // Unchanged rule: a later scan only counts as a departure when it is
+        // more than ten minutes after arrival.
+        const hasDeparture = lastTime !== timeIn && timeToSeconds(lastTime) - timeToSeconds(timeIn) > 600;
+        const timeOut = hasDeparture ? lastTime : null;
+        const effectiveOut = timeOut || timeIn;
+
+        const usage = usageFor(entry.officer.id, entry.date);
+        const graceUsed = [...usage.grace].filter((d) => d !== entry.date).length;
+        const shortLeavesUsed = [...usage.shortLeave].filter((d) => d !== entry.date).length;
+
+        const { status, shortLeaveMinutesUsed, graceDayUsed } = calculateAttendanceStatus(
+          timeIn,
+          effectiveOut,
+          entry.officer,
+          graceUsed,
+          shortLeavesUsed,
+          entry.date,
+        );
+
+        // Keep the running totals correct for later days in the same month.
+        if (graceDayUsed) usage.grace.add(entry.date);
+        else usage.grace.delete(entry.date);
+        if (status === 'SHORT_LEAVE') usage.shortLeave.add(entry.date);
+        else usage.shortLeave.delete(entry.date);
+
+        if (entry.date === todayKey) officersSeenToday.add(entry.officer.id);
+
+        const values = {
+          time_in: timeIn,
+          time_out: timeOut,
+          status,
+          short_leave_minutes: shortLeaveMinutesUsed || 0,
+          grace_day_used: !!graceDayUsed,
+        };
+
+        if (!existing) {
+          attendanceToInsert.push({ officer_id: entry.officer.id, date: entry.date, ...values });
+          attendanceByKey.set(key, { ...values, officer_id: entry.officer.id, date: entry.date });
+        } else {
+          // Skip rows a re-import would not actually change.
+          const unchanged =
+            String(existing.time_in ?? '') === String(values.time_in ?? '') &&
+            String(existing.time_out ?? '') === String(values.time_out ?? '') &&
+            existing.status === values.status &&
+            Number(existing.short_leave_minutes || 0) === values.short_leave_minutes &&
+            !!existing.grace_day_used === values.grace_day_used;
+          if (!unchanged) attendanceToUpdate.push({ id: existing.id, values });
+        }
+      }
+
+      // --- 7. Write everything in batches, in one transaction ---
+      await db.transaction(async (trx) => {
+        for (const part of chunk(logsToInsert, 200)) await trx('biometric_logs').insert(part);
+        for (const part of chunk(logIdsToPromote, 500)) {
+          await trx('biometric_logs').whereIn('id', part).update({ status: 'SYNCED' });
+        }
+        for (const part of chunk(attendanceToInsert, 200)) await trx('attendance').insert(part);
+        for (const { id, values } of attendanceToUpdate) {
+          await trx('attendance').where('id', id).update(values);
+        }
+        if (officersSeenToday.size > 0) {
+          await trx('officers')
+            .whereIn('id', [...officersSeenToday])
+            .update({ dashboard_status: 'AVAILABLE', eta: null, updated_at: trx.fn.now() });
+        }
       });
+
+      const elapsed = Date.now() - startedAt;
+      console.log(
+        `[AttendanceImport] ${logs.length} rows in ${elapsed}ms: ` +
+          `${logsToInsert.length} new logs, ${attendanceToInsert.length} attendance created, ` +
+          `${attendanceToUpdate.length} updated, ${failures.length} unreadable`,
+      );
+
+      let message =
+        `${logsToInsert.length} new logs ingested. ` +
+        `${attendanceToInsert.length} attendance records created, ${attendanceToUpdate.length} updated.`;
+      if (unmappedBioIds.size > 0) {
+        const sample = [...unmappedBioIds].slice(0, 5).join(', ');
+        message += ` ${unmappedBioIds.size} biometric ID(s) are not mapped to an officer (${sample}${unmappedBioIds.size > 5 ? ', …' : ''}); their scans were stored but no attendance was recorded.`;
+      }
+
+      // Partial failures used to be counted into a success message and returned
+      // as HTTP 200, so a completely failed import still read as "success".
+      if (failures.length > 0) {
+        return res.status(207).json({
+          status: 'partial',
+          message: `${message} ${failures.length} row(s) could not be read.`,
+          failures: failures.slice(0, 20),
+        });
+      }
+
+      res.json({ status: 'success', message });
     } catch (error: any) {
       console.error('[AttendanceImport] Global Error:', error);
       res.status(500).json({ status: 'error', message: error.message });
@@ -2878,20 +3014,6 @@ async function startServer() {
   // casual entitlement. Both now call computeLeaveBalances().
 
   const LEAVE_ENTITLEMENTS = { CASUAL: 21, SICK: 7, VACATION: 21 };
-
-  /**
-   * Normalises a date from either driver to 'YYYY-MM-DD'. sqlite3 returns DATE
-   * columns as strings, mysql2 returns JS Date objects at local midnight.
-   */
-  const toDateKey = (value: any): string => {
-    if (value instanceof Date) {
-      const y = value.getFullYear();
-      const m = String(value.getMonth() + 1).padStart(2, '0');
-      const d = String(value.getDate()).padStart(2, '0');
-      return `${y}-${m}-${d}`;
-    }
-    return String(value).slice(0, 10);
-  };
 
   /**
    * Every calendar day in an inclusive range, as date keys. A reversed range

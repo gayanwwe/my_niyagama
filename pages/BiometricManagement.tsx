@@ -245,7 +245,8 @@ const BiometricManagement: React.FC<Props> = ({ user, lang }) => {
         });
 
         const res = await api.importBiometricLogs(logsToSend);
-        setImportStatus(`✅ ${res.message}`);
+        // A partial import must not read as a clean success.
+        setImportStatus(res?.status === 'partial' ? `⚠️ ${res.message}` : `✅ ${res.message}`);
         setSelectedFile(null);
         setPreviewLogs([]);
         if (fileInputRef.current) fileInputRef.current.value = '';
