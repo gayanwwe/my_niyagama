@@ -56,45 +56,37 @@ const JWT_SECRET = (() => {
   return crypto.randomBytes(32).toString('hex');
 })();
 
-// Force MySQL connection if DB_HOST is present, since that is a clear indicator of a MySQL service
-const useMysql = !!process.env.DB_HOST || 
-                 process.env.DB_CLIENT === 'mysql2' || 
-                 process.env.DB_CONNECTION === 'mysql' || 
-                 process.env.DB_CONNECTION === 'mysql2';
+// MySQL is the only supported database. SQLite support was removed: the two
+// drivers disagreed on date types, enum enforcement and several SQL dialects,
+// so behaviour differed between a developer's machine and the deployment.
+const dbName = process.env.DB_NAME || process.env.DB_DATABASE;
+const dbHost = process.env.DB_HOST;
 
-console.log(`DEBUG: Database Selection => useMysql=${useMysql}`);
-
-const sqliteFilename = path.resolve(process.cwd(), (process.env.DB_CONNECTION === 'sqlite' ? process.env.DB_DATABASE : null) || './niyagama_db.sqlite');
-
-// Ensure the parent directory of sqliteFilename exists
-if (!useMysql) {
-  const dir = path.dirname(sqliteFilename);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
+if (!dbHost || !dbName) {
+  console.error(
+    'FATAL: MySQL is not configured. Set DB_HOST and DB_NAME (plus DB_USER, ' +
+    'DB_PASSWORD and optionally DB_PORT) in the environment. See .env.example.',
+  );
+  process.exit(1);
 }
 
 const dbConfig = {
-  client: useMysql ? 'mysql2' : (process.env.DB_CLIENT || 'sqlite3'),
-  connection: useMysql ? {
-    host: process.env.DB_HOST || '127.0.0.1',
+  client: 'mysql2',
+  connection: {
+    host: dbHost,
     user: process.env.DB_USER || process.env.DB_USERNAME || 'root',
     password: process.env.DB_PASSWORD || '',
-    database: process.env.DB_NAME || process.env.DB_DATABASE || 'niyagama_db',
+    database: dbName,
     port: Number(process.env.DB_PORT) || 3306,
-  } : {
-    filename: sqliteFilename
+    // Hand DATE and DATETIME back as strings. mysql2 otherwise builds JS Date
+    // objects in the server's timezone, which shifts a date by a day whenever
+    // the server and the division are not in the same zone.
+    dateStrings: true,
   },
-  useNullAsDefault: true,
+  pool: { min: 2, max: Number(process.env.DB_POOL_MAX) || 10 },
 };
 
-console.log(`DEBUG: Knex Config Client: ${dbConfig.client}`);
-if (useMysql) {
-  const conn = dbConfig.connection as any;
-  console.log(`DEBUG: Knex Connection MySQL => Host: ${conn.host}, User: ${conn.user}, DB: ${conn.database}, Port: ${conn.port}`);
-} else {
-  console.log(`DEBUG: Knex Connection SQLite3 => Path: ${sqliteFilename}`);
-}
+console.log(`DEBUG: MySQL => ${dbConfig.connection.user}@${dbConfig.connection.host}:${dbConfig.connection.port} db=${dbConfig.connection.database}`);
 
 const db = knex(dbConfig);
 
@@ -122,13 +114,7 @@ async function executeSeedSql() {
 
         if (cleanQuery.length > 0) {
           try {
-            if (useMysql) {
-              await db.raw(cleanQuery);
-            } else {
-              // Convert 'INSERT IGNORE' to SQLite compatible equivalent
-              const sqliteCompatQuery = cleanQuery.replace(/INSERT IGNORE INTO/gi, 'INSERT OR IGNORE INTO');
-              await db.raw(sqliteCompatQuery);
-            }
+            await db.raw(cleanQuery);
           } catch (err: any) {
             console.error(`Database Seeder Error at query ${i}: ${err.message}\nQuery: ${cleanQuery}`);
           }
@@ -235,8 +221,9 @@ async function startServer() {
   const DEFAULT_NON_WORKING_WEEKDAYS = [0, 6];
 
   /**
-   * Normalises a date from either driver to 'YYYY-MM-DD'. sqlite3 returns DATE
-   * columns as strings, mysql2 returns JS Date objects at local midnight.
+   * Normalises a date to 'YYYY-MM-DD'. With dateStrings enabled mysql2 hands
+   * DATE columns back as strings, but rows can still arrive as Date objects
+   * from code paths that construct them, so both are handled.
    */
   const toDateKey = (value: any): string => {
     if (value instanceof Date) {
@@ -312,7 +299,7 @@ async function startServer() {
       // Disable foreign key checks for dropping
       // MySQL-only syntax. On SQLite this threw and aborted the whole route
       // before a single table was dropped.
-      if (useMysql) await db.raw('SET FOREIGN_KEY_CHECKS = 0');
+      await db.raw('SET FOREIGN_KEY_CHECKS = 0');
       
       // Drop existing tables
       await db.schema.dropTableIfExists('biometric_logs');
@@ -376,12 +363,12 @@ async function startServer() {
       }
 
       // Re-enable foreign key checks
-      if (useMysql) await db.raw('SET FOREIGN_KEY_CHECKS = 1');
+      await db.raw('SET FOREIGN_KEY_CHECKS = 1');
 
       res.json({ status: 'success', message: 'Database initialized successfully' });
     } catch (error: any) {
       // Ensure foreign key checks are re-enabled even on error
-      if (useMysql) await db.raw('SET FOREIGN_KEY_CHECKS = 1').catch(() => {});
+      await db.raw('SET FOREIGN_KEY_CHECKS = 1').catch(() => {});
       console.error('Database Setup Error:', error);
       res.status(500).json({ status: 'error', message: error.message });
     }
@@ -1201,7 +1188,7 @@ async function startServer() {
     }
 
     // Widen columns that hold the longer status/type names the app now uses.
-    if (useMysql) {
+    {
       const widenings = [
         'ALTER TABLE attendance MODIFY COLUMN status VARCHAR(50) DEFAULT "PRESENT"',
         // The leave form offers SHORT_LEAVE and HALF_DAY, which do not fit the

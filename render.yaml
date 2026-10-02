@@ -16,3 +16,14 @@ services:
       # runtime for /api/ai/generate; it is no longer baked into the client bundle.
       - key: GEMINI_API_KEY
         sync: false
+      # MySQL is required; the server exits at boot without these.
+      - key: DB_HOST
+        sync: false
+      - key: DB_PORT
+        value: 3306
+      - key: DB_NAME
+        sync: false
+      - key: DB_USER
+        sync: false
+      - key: DB_PASSWORD
+        sync: false

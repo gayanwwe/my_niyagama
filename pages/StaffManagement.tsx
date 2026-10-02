@@ -64,11 +64,23 @@ const StaffManagement: React.FC<Props> = ({ user, lang }) => {
     setIsLoading(true);
     setErrorMessage(null);
     try {
-      const [staffData, deptsData, postsData] = await Promise.all([
+      // Settled rather than all: a failure fetching the department or
+      // designation lists used to reject the whole batch, so the staff
+      // registry rendered empty even though the officer list had loaded.
+      const [staffRes, deptsRes, postsRes] = await Promise.allSettled([
         api.getAllStaff(),
         api.getDepartments(),
         api.getDesignations()
       ]);
+
+      if (staffRes.status === 'rejected') throw staffRes.reason;
+      const staffData = staffRes.value || [];
+      const deptsData = deptsRes.status === 'fulfilled' ? (deptsRes.value || []) : [];
+      const postsData = postsRes.status === 'fulfilled' ? (postsRes.value || []) : [];
+
+      if (deptsRes.status === 'rejected') console.error('Departments failed to load:', deptsRes.reason);
+      if (postsRes.status === 'rejected') console.error('Designations failed to load:', postsRes.reason);
+
       setStaff(staffData);
       setDepartments(deptsData);
       setDesignations(postsData);

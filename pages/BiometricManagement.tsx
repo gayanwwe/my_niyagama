@@ -341,10 +341,13 @@ const BiometricManagement: React.FC<Props> = ({ user, lang }) => {
       case 'HALF_DAY': return 'bg-pink-500';
       case 'SHORT_LEAVE': return 'bg-orange-500';
       case 'HOLIDAY': return 'bg-yellow-400';
-      case 'NON_WORKING': return 'bg-slate-200';  // weekend: not an absence
+      case 'NON_WORKING': return 'bg-slate-200';    // weekend: not an absence
       case 'MISSING_PUNCH': return 'bg-amber-400';  // needs a human to resolve
       case 'LATE': return 'bg-amber-500';
-      case 'LEAVE': return 'bg-red-500';
+      case 'FIELD': return 'bg-sky-500';
+      // Sanctioned leave is not the same as an unexplained absence, so it no
+      // longer shares the red used for ABSENT.
+      case 'LEAVE': return 'bg-violet-500';
       default: return 'bg-slate-100';
     }
   };
@@ -412,102 +415,141 @@ const BiometricManagement: React.FC<Props> = ({ user, lang }) => {
       )}
 
       {viewMode === 'INSTITUTIONAL_MAP' && (
-        <div className="bg-slate-900 p-8 rounded-[3.5rem] text-white shadow-2xl relative overflow-hidden group">
-           <div className="absolute top-0 right-0 p-10 opacity-10 group-hover:rotate-12 transition-transform text-8xl">📊</div>
-           <div className="relative z-10 flex flex-col md:flex-row justify-between items-start md:items-end gap-6 mb-10">
-              <div className="space-y-2">
-                 <h3 className="text-3xl font-black tracking-tighter">{isManagement ? 'Divisional Presence Map' : 'Personal Attendance Map'}</h3>
-                 <p className="text-blue-400 text-xs font-black uppercase tracking-widest">Monthly Status Grid Reconciliation</p>
-                 <div className="flex flex-wrap gap-4 mt-4">
-                    <div className="flex items-center gap-2">
-                       <div className="w-3 h-3 bg-emerald-500 rounded-sm"></div>
-                       <span className="text-[9px] font-black uppercase text-slate-400">Present</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                       <div className="w-3 h-3 bg-red-500 rounded-sm"></div>
-                       <span className="text-[9px] font-black uppercase text-slate-400">Absence</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                       <div className="w-3 h-3 bg-pink-500 rounded-sm"></div>
-                       <span className="text-[9px] font-black uppercase text-slate-400">Half-Day</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                       <div className="w-3 h-3 bg-orange-500 rounded-sm"></div>
-                       <span className="text-[9px] font-black uppercase text-slate-400">Short Leave</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                       <div className="w-3 h-3 bg-yellow-400 rounded-sm"></div>
-                       <span className="text-[9px] font-black uppercase text-slate-400">Holiday</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                       <div className="w-3 h-3 bg-slate-100/20 rounded-sm"></div>
-                       <span className="text-[9px] font-black uppercase text-slate-400">No Data</span>
-                    </div>
-                 </div>
+        <div className="bg-white rounded-[3.5rem] shadow-sm border border-slate-100 overflow-hidden">
+          <header className="p-8 border-b border-slate-100 bg-slate-50">
+            <div className="flex flex-col lg:flex-row justify-between items-start lg:items-end gap-6">
+              <div>
+                <h3 className="text-3xl font-black text-slate-900 tracking-tighter">
+                  {isManagement ? 'Divisional Presence Map' : 'Personal Attendance Map'}
+                </h3>
+                <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mt-2">
+                  Monthly Status Grid Reconciliation
+                </p>
               </div>
-              <div className="flex flex-col md:flex-row gap-3">
-                <div className="relative">
-                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-white/30 text-xs">🔍</span>
-                  <input 
-                    type="text" 
-                    placeholder="Search officer..." 
-                    value={mapSearch} 
-                    onChange={e => setMapSearch(e.target.value)} 
-                    className="pl-8 pr-4 py-2 bg-white/5 border border-white/10 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500/50"
-                  />
-                </div>
-                <div className="flex gap-3 bg-white/5 p-2 rounded-2xl border border-white/10">
-                   <select value={selectedMonth} onChange={e => setSelectedMonth(Number(e.target.value))} className="bg-transparent border-none outline-none font-black text-[10px] uppercase cursor-pointer pr-4">
-                      {Array.from({ length: 12 }).map((_, i) => <option key={i+1} value={i+1} className="text-slate-900">{new Date(0, i).toLocaleString('default', { month: 'long' })}</option>)}
-                   </select>
-                   <select value={selectedYear} onChange={e => setSelectedYear(Number(e.target.value))} className="bg-transparent border-none outline-none font-black text-[10px] uppercase cursor-pointer">
-                      <option value={2024} className="text-slate-900">2024</option>
-                      <option value={2025} className="text-slate-900">2025</option>
-                      <option value={2026} className="text-slate-900">2026</option>
-                   </select>
-                </div>
-              </div>
-           </div>
 
-           <div className="relative overflow-auto max-h-[600px] rounded-[2rem] border border-white/5 no-scrollbar bg-white/5 p-4">
-              <table className="w-full text-left border-collapse">
-                 <thead>
-                    <tr className="text-[9px] font-black text-slate-500 uppercase tracking-widest border-b border-white/5">
-                       <th className="p-4 sticky left-0 top-0 bg-slate-900 z-30 min-w-[200px]">Officer</th>
-                       {monthlyRegistry?.daysInMonth && Array.from({ length: monthlyRegistry.daysInMonth }).map((_, i) => (
-                         <th key={i} className="p-4 text-center min-w-[40px] sticky top-0 bg-slate-900 z-20">{i + 1}</th>
-                       ))}
-                    </tr>
-                 </thead>
-                 <tbody className="divide-y divide-white/5">
-                    {isLoading ? (
-                      Array.from({ length: 5 }).map((_, i) => (
-                        <tr key={i}><td colSpan={32} className="p-4"><Skeleton className="h-8 w-full bg-white/5" /></td></tr>
-                      ))
-                    ) : (monthlyRegistry?.registry || [])
-                        .filter((entry: any) => isManagement || String(entry.officer_id) === String(user.id))
-                        .filter((entry: any) => !mapSearch || entry.name.toLowerCase().includes(mapSearch.toLowerCase()))
-                        .map((entry: any) => (
-                      <tr key={entry.officer_id} className="hover:bg-white/5 transition-all">
-                         <td className="p-4 sticky left-0 bg-slate-900 z-20 border-r border-white/5">
-                            <div className="flex items-center gap-3">
-                               <div className="w-8 h-8 rounded-lg bg-indigo-500/20 flex items-center justify-center text-[10px] font-black text-indigo-400">{entry.name ? entry.name[0] : '?'}</div>
-                               <div className="min-w-0">
-                                  <p className="text-xs font-black truncate">{entry.name || 'Unknown'}</p>
-                                  <p className="text-[8px] font-bold text-slate-500 uppercase truncate">{entry.post || 'No Post'}</p>
-                               </div>
-                            </div>
-                         </td>
-                         {entry.days && typeof entry.days === 'object' ? Object.values(entry.days).map((status: any, idx: number) => (
-                           <td key={idx} className="p-2 text-center">
-                              <div className={`w-6 h-6 rounded-md mx-auto transition-transform hover:scale-125 cursor-default ${getDayColor(status)} shadow-sm`} title={`Day ${idx+1}: ${status}`} />
-                           </td>
-                         )) : null}
-                      </tr>
-                    ))}
-                 </tbody>
-              </table>
-           </div>
+              <div className="flex flex-col sm:flex-row gap-3 w-full lg:w-auto">
+                <div className="flex flex-col gap-2 flex-1 min-w-[200px]">
+                  <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Live Filter</span>
+                  <div className="relative">
+                    <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300 font-bold">🔍</span>
+                    <input
+                      type="text"
+                      placeholder="Search officer..."
+                      value={mapSearch}
+                      onChange={e => setMapSearch(e.target.value)}
+                      className="w-full pl-10 pr-4 py-4 bg-white border border-slate-200 rounded-2xl font-bold text-xs shadow-sm outline-none focus:ring-4 focus:ring-blue-50"
+                    />
+                  </div>
+                </div>
+                <div className="flex flex-col gap-2">
+                  <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Period</span>
+                  <div className="flex gap-2">
+                    <select
+                      value={selectedMonth}
+                      onChange={e => setSelectedMonth(Number(e.target.value))}
+                      className="p-4 bg-white border border-slate-200 rounded-2xl font-black text-xs outline-none shadow-sm cursor-pointer focus:ring-4 focus:ring-blue-50"
+                    >
+                      {Array.from({ length: 12 }).map((_, i) => (
+                        <option key={i + 1} value={i + 1}>{new Date(0, i).toLocaleString('default', { month: 'long' })}</option>
+                      ))}
+                    </select>
+                    <select
+                      value={selectedYear}
+                      onChange={e => setSelectedYear(Number(e.target.value))}
+                      className="p-4 bg-white border border-slate-200 rounded-2xl font-black text-xs outline-none shadow-sm cursor-pointer focus:ring-4 focus:ring-blue-50"
+                    >
+                      {[2024, 2025, 2026, 2027].map(y => <option key={y} value={y}>{y}</option>)}
+                    </select>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-2 mt-6">
+              {[
+                ['PRESENT', 'bg-emerald-500'],
+                ['ABSENT', 'bg-red-500'],
+                ['LEAVE', 'bg-violet-500'],
+                ['HALF DAY', 'bg-pink-500'],
+                ['SHORT LEAVE', 'bg-orange-500'],
+                ['FIELD', 'bg-sky-500'],
+                ['MISSING PUNCH', 'bg-amber-400'],
+                ['HOLIDAY', 'bg-yellow-400'],
+                ['WEEKEND', 'bg-slate-200'],
+              ].map(([label, colour]) => (
+                <div key={label} className="flex items-center gap-2 bg-white border border-slate-200 rounded-full pl-2 pr-3 py-1 shadow-sm">
+                  <div className={`w-2.5 h-2.5 rounded-sm ${colour}`}></div>
+                  <span className="text-[8px] font-black uppercase tracking-widest text-slate-500">{label}</span>
+                </div>
+              ))}
+            </div>
+          </header>
+
+          <div className="relative overflow-auto max-h-[600px]">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="text-[9px] font-black text-slate-400 uppercase tracking-widest">
+                  <th className="p-4 sticky left-0 top-0 bg-slate-50 z-30 min-w-[220px] border-b border-r border-slate-100">Officer</th>
+                  {monthlyRegistry?.daysInMonth && Array.from({ length: monthlyRegistry.daysInMonth }).map((_, i) => {
+                    const d = new Date(selectedYear, selectedMonth - 1, i + 1);
+                    const weekend = d.getDay() === 0 || d.getDay() === 6;
+                    return (
+                      <th
+                        key={i}
+                        className={`px-2 py-3 text-center min-w-[38px] sticky top-0 z-20 border-b border-slate-100 ${weekend ? 'bg-slate-100' : 'bg-slate-50'}`}
+                      >
+                        {/* Weekday initial makes a 31-column grid readable at a glance. */}
+                        <span className={`block text-[7px] ${weekend ? 'text-slate-400' : 'text-slate-300'}`}>
+                          {d.toLocaleDateString('en-US', { weekday: 'short' })[0]}
+                        </span>
+                        <span className={weekend ? 'text-slate-500' : 'text-slate-600'}>{i + 1}</span>
+                      </th>
+                    );
+                  })}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {isLoading ? (
+                  Array.from({ length: 5 }).map((_, i) => (
+                    <tr key={i}><td colSpan={32} className="p-4"><Skeleton className="h-8 w-full" /></td></tr>
+                  ))
+                ) : (monthlyRegistry?.registry || [])
+                    .filter((entry: any) => isManagement || String(entry.officer_id) === String(user.id))
+                    .filter((entry: any) => !mapSearch || (entry.name || '').toLowerCase().includes(mapSearch.toLowerCase()))
+                    .map((entry: any) => (
+                  <tr key={entry.officer_id} className="hover:bg-slate-50 transition-colors group">
+                    <td className="p-4 sticky left-0 bg-white group-hover:bg-slate-50 z-20 border-r border-slate-100 transition-colors">
+                      <div className="flex items-center gap-3">
+                        <div className="w-9 h-9 rounded-xl bg-blue-50 flex items-center justify-center text-[11px] font-black text-[#1877F2] flex-none">
+                          {entry.name ? entry.name[0] : '?'}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-xs font-black text-slate-900 truncate">{entry.name || 'Unknown'}</p>
+                          <p className="text-[8px] font-bold text-slate-400 uppercase tracking-tighter truncate">{entry.post || 'No Post'}</p>
+                        </div>
+                      </div>
+                    </td>
+                    {entry.days && typeof entry.days === 'object' ? Object.values(entry.days).map((status: any, idx: number) => (
+                      <td key={idx} className="p-2 text-center">
+                        <div
+                          className={`w-6 h-6 rounded-md mx-auto transition-transform hover:scale-125 cursor-default ${getDayColor(status)} ${status === 'NON_WORKING' ? '' : 'shadow-sm'}`}
+                          title={`${entry.name} — ${selectedYear}-${String(selectedMonth).padStart(2, '0')}-${String(idx + 1).padStart(2, '0')}: ${String(status).replace(/_/g, ' ')}`}
+                        />
+                      </td>
+                    )) : null}
+                  </tr>
+                ))}
+                {!isLoading && (monthlyRegistry?.registry || []).length === 0 && (
+                  <tr>
+                    <td colSpan={32} className="p-16 text-center">
+                      <p className="text-sm font-black text-slate-400">No attendance records for this period</p>
+                      <p className="text-[10px] font-bold text-slate-300 uppercase tracking-widest mt-2">Import biometric logs to populate the grid</p>
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
