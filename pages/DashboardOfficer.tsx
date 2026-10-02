@@ -122,7 +122,7 @@ const ExecutivePresencePanel: React.FC<{ lang: 'EN' | 'SI' }> = ({ lang }) => {
         {executives.map((exec, i) => (
           <div key={i} className="flex flex-col items-center group snap-center min-w-[120px] sm:min-w-0">
             <div className="relative p-1.5 rounded-[2rem] border-2 transition-all group-hover:scale-105 group-hover:-translate-y-1">
-              <div className={`rounded-[1.8rem] overflow-hidden ${exec.status_label === 'OFFLINE' ? 'grayscale opacity-60' : ''}`}>
+              <div className={`rounded-[1.8rem] overflow-hidden ${['OFFLINE', 'LEFT'].includes(exec.status_label) ? 'grayscale opacity-60' : ''}`}>
                  <img 
                    src={exec.profile_pic || `https://ui-avatars.com/api/?name=${exec.name}&background=random&color=fff`} 
                    className="w-16 h-16 object-cover" 
@@ -133,6 +133,8 @@ const ExecutivePresencePanel: React.FC<{ lang: 'EN' | 'SI' }> = ({ lang }) => {
                 exec.status_label === 'AVAILABLE' ? 'bg-emerald-500' :
                 exec.status_label === 'BUSY' ? 'bg-amber-500' :
                 exec.status_label === 'OFF TO FIELD' ? 'bg-blue-500' :
+                exec.status_label === 'ON LEAVE' ? 'bg-purple-500' :
+                exec.status_label === 'LEFT' ? 'bg-slate-500' :
                 'bg-slate-300'
               }`}></span>
             </div>
@@ -145,6 +147,8 @@ const ExecutivePresencePanel: React.FC<{ lang: 'EN' | 'SI' }> = ({ lang }) => {
                 exec.status_label === 'AVAILABLE' ? 'bg-emerald-50 text-emerald-600' :
                 exec.status_label === 'BUSY' ? 'bg-amber-50 text-amber-600' :
                 exec.status_label === 'OFF TO FIELD' ? 'bg-blue-50 text-blue-600' :
+                exec.status_label === 'ON LEAVE' ? 'bg-purple-50 text-purple-600' :
+                exec.status_label === 'LEFT' ? 'bg-slate-100 text-slate-500' :
                 'bg-slate-100 text-slate-400'
               }`}>
                 {exec.status_label}

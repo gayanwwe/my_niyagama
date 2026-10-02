@@ -310,7 +310,9 @@ async function startServer() {
       console.log('Initializing Database...');
       
       // Disable foreign key checks for dropping
-      await db.raw('SET FOREIGN_KEY_CHECKS = 0');
+      // MySQL-only syntax. On SQLite this threw and aborted the whole route
+      // before a single table was dropped.
+      if (useMysql) await db.raw('SET FOREIGN_KEY_CHECKS = 0');
       
       // Drop existing tables
       await db.schema.dropTableIfExists('biometric_logs');
@@ -343,388 +345,19 @@ async function startServer() {
       await db.schema.dropTableIfExists('dashboard_status');
       await db.schema.dropTableIfExists('layout_mapping');
 
-      // 0. Biometric Logs
-      await db.schema.createTable('biometric_logs', (table) => {
-        table.increments('id');
-        table.string('hardware_id');
-        table.date('scan_date');
-        table.time('scan_time');
-        table.string('terminal_id').defaultTo('T-01');
-        table.enum('status', ['SYNCED', 'UNMAPPED', 'DUPLICATE', 'ERROR']).defaultTo('UNMAPPED');
-        table.timestamps(true, true);
-      });
+      // Recreate every table from the single definition in ensureTables().
+      // This route used to carry its own full copy of the schema, which drifted
+      // from the one that actually runs on boot: new columns and indexes were
+      // added here and never appeared in any database.
+      await ensureTables();
+      // Same upgrades the boot path applies, so a reinitialised database is
+      // identical to one the server just created - indexes included.
+      await ensureSchemaUpgrades();
 
-      // 1. Departments
-      await db.schema.createTable('departments', (table) => {
-        table.bigIncrements('id');
-        table.string('name').unique();
-        table.index('name');  // Index for frequent lookups
-        table.timestamps(true, true);
-      });
-
-      // 2. Designations
-      await db.schema.createTable('designations', (table) => {
-        table.bigIncrements('id');
-        table.string('name').unique();
-        table.index('name');
-        table.timestamps(true, true);
-      });
-
-      // 2.1 Posts
-      await db.schema.createTable('posts', (table) => {
-        table.bigIncrements('id');
-        table.string('name').unique();
-        table.timestamps(true, true);
-      });
-
-      // 3. Officers
-      await db.schema.createTable('officers', (table) => {
-        table.bigIncrements('id');
-        table.string('username').unique().nullable();
-        table.string('biometric_id').unique().nullable();
-        table.string('pin');
-        table.string('name');
-        table.string('post');
-        table.string('department');
-        table.string('role'); // Use strings from UserRole enum
-        table.enum('work_type', ['OFFICE', 'FIELD']).defaultTo('OFFICE');
-        table.boolean('is_field_officer').defaultTo(false);
-        table.string('official_phone').nullable();
-        table.string('profile_pic').nullable();
-        table.string('pending_profile_pic').nullable();
-        table.string('address').nullable();
-        table.text('bio').nullable();
-        table.date('birthday').nullable();
-        table.date('join_date').nullable();
-        table.string('dashboard_status').defaultTo('OFFLINE');
-        table.string('eta').nullable();
-        table.boolean('is_deleted').defaultTo(false);  // Soft delete flag
-        table.timestamp('deleted_at').nullable();      // Soft delete timestamp
-        table.timestamps(true, true);
-        table.index('department');  // Index for department-based queries
-        table.index('role');  // Index for role-based queries
-        table.index('work_type');  // Index for work type queries
-      });
-
-      // 4. Attendance
-      await db.schema.createTable('attendance', (table) => {
-        table.bigIncrements('id');
-        table.bigInteger('officer_id').unsigned().references('id').inTable('officers').onDelete('CASCADE');
-        table.date('date');
-        table.time('time_in');
-        table.time('time_out').nullable();
-        table.integer('short_leave_minutes').defaultTo(0);
-        table.boolean('is_temporary').defaultTo(false);
-        table.enum('is_half_day', ['AM', 'PM']).nullable();
-        table.string('status', 50).defaultTo('PRESENT');
-        table.boolean('is_deleted').defaultTo(false);  // Soft delete flag
-        table.timestamp('deleted_at').nullable();      // Soft delete timestamp
-        table.timestamps(true, true);
-        table.index('officer_id');  // Critical for querying officer attendance
-        table.index('status');  // Index for status-based queries
-        table.index('date');  // Index for date-based queries
-      });
-
-      // 5. Leaves
-      await db.schema.createTable('leaves', (table) => {
-        table.bigIncrements('id');
-        table.bigInteger('officer_id').unsigned().references('id').inTable('officers').onDelete('CASCADE');
-        table.string('type', 50); // CASUAL|SICK|VACATION|DUTY|SHORT_LEAVE|HALF_DAY
-        table.date('start_date');
-        table.date('end_date');
-        table.string('sub_type'); // AM/PM for SHORT_LEAVE/HALF_DAY
-        table.text('reason');
-        table.string('status', 50).defaultTo('PENDING');
-        table.boolean('is_deleted').defaultTo(false);  // Soft delete flag
-        table.timestamp('deleted_at').nullable();      // Soft delete timestamp
-        table.timestamps(true, true);
-        table.index('officer_id');  // Critical for officer leave queries
-        table.index('status');  // Index for status-based queries
-        table.index('type');  // Index for type-based queries
-      });
-
-      // 6. Circulars
-      await db.schema.createTable('circulars', (table) => {
-        table.bigIncrements('id');
-        table.string('reference').unique();
-        table.string('title');
-        table.string('category');
-        table.text('summary');
-        table.text('content').nullable();
-        table.string('document_number').nullable();
-        table.date('issued_date').nullable();
-        table.string('file_url');
-        table.timestamps(true, true);
-      });
-
-      // 13. Circles (Moved up for reference)
-      await db.schema.createTable('circles', (table) => {
-        table.bigIncrements('id');
-        table.string('name');
-        table.string('description');
-        table.string('color').nullable();
-        table.string('logo').nullable();
-        table.bigInteger('leader_id').unsigned().references('id').inTable('officers');
-        table.timestamps(true, true);
-      });
-
-      // 7. Tasks
-      await db.schema.createTable('projects', (table) => {
-        table.bigIncrements('id');
-        table.string('title');
-        table.string('name').nullable(); // Keep for compatibility if needed
-        table.string('description');
-        table.text('goal').nullable();
-        table.text('mission').nullable();
-        table.text('vision').nullable();
-        table.string('status');
-        table.bigInteger('circle_id').unsigned().references('id').inTable('circles').onDelete('SET NULL');
-        table.timestamps(true, true);
-      });
-
-      await db.schema.createTable('tasks', (table) => {
-        table.bigIncrements('id');
-        table.bigInteger('project_id').unsigned().references('id').inTable('projects').onDelete('CASCADE');
-        table.string('title');
-        table.text('description');
-        table.bigInteger('assigned_officer_id').unsigned().references('id').inTable('officers');
-        table.bigInteger('assigned_to').unsigned().references('id').inTable('officers'); // Keep for compatibility
-        table.date('due_date');
-        table.string('priority');
-        table.string('status');
-        table.timestamps(true, true);
-      });
-
-      await db.schema.createTable('task_updates', (table) => {
-        table.bigIncrements('id');
-        table.bigInteger('task_id').unsigned().references('id').inTable('tasks').onDelete('CASCADE');
-        table.bigInteger('officer_id').unsigned().references('id').inTable('officers');
-        table.text('comment');
-        table.integer('progress');
-        table.timestamps(true, true);
-      });
-
-      // 8. Community
-      await db.schema.createTable('community_posts', (table) => {
-        table.bigIncrements('id');
-        table.bigInteger('author_id').unsigned().references('id').inTable('officers');
-        table.text('content');
-        table.string('image_url').nullable();
-        table.integer('likes').defaultTo(0);
-        table.timestamps(true, true);
-      });
-
-      await db.schema.createTable('community_comments', (table) => {
-        table.bigIncrements('id');
-        table.bigInteger('post_id').unsigned().references('id').inTable('community_posts').onDelete('CASCADE');
-        table.bigInteger('author_id').unsigned().references('id').inTable('officers');
-        table.text('content');
-        table.timestamps(true, true);
-      });
-
-      // 9. Dashboard Components
-      await db.schema.createTable('dashboard_notices', (table) => {
-        table.bigIncrements('id');
-        table.string('title');
-        table.text('content');
-        table.string('priority');
-        table.boolean('is_active').defaultTo(true);
-        table.timestamps(true, true);
-      });
-
-      await db.schema.createTable('dashboard_events', (table) => {
-        table.bigIncrements('id');
-        table.string('title').nullable();
-        table.date('event_date').nullable();
-        table.string('event_time').nullable();
-        table.string('location').nullable();
-        table.text('image_url').nullable();
-        table.boolean('is_active').defaultTo(true);
-        table.timestamps(true, true);
-      });
-
-      await db.schema.createTable('dashboard_videos', (table) => {
-        table.bigIncrements('id');
-        table.string('title');
-        table.string('video_url');
-        table.boolean('is_active').defaultTo(true);
-        table.timestamps(true, true);
-      });
-
-      await db.schema.createTable('dashboard_alerts', (table) => {
-        table.bigIncrements('id');
-        table.string('message');
-        table.text('instructions').nullable();
-        table.string('type');
-        table.boolean('is_active').defaultTo(true);
-        table.timestamps(true, true);
-      });
-
-      // 10. Journal
-      await db.schema.createTable('journal_entries', (table) => {
-        table.bigIncrements('id');
-        table.bigInteger('officer_id').unsigned().references('id').inTable('officers');
-        table.string('title');
-        table.string('category').nullable();
-        table.text('content');
-        table.date('date');
-        table.timestamps(true, true);
-      });
-
-      // 11. Dashboard Settings
-      await db.schema.createTable('dashboard_settings', (table) => {
-        table.bigIncrements('id');
-        table.integer('refresh_interval').defaultTo(30);
-        table.integer('scrolling_speed').defaultTo(2);
-        table.string('video_source').defaultTo('URL');
-        table.text('birthday_image_url').nullable();
-        table.string('video_playlist_skip').nullable();
-        table.text('default_cover_pic').nullable();
-        table.timestamps(true, true);
-      });
-
-      // 12. Queue
-      await db.schema.createTable('queue', (table) => {
-        table.bigIncrements('id');
-        table.string('current_token');
-        table.string('next_token');
-        table.string('counter_number');
-        table.boolean('is_visible').defaultTo(true);
-        table.timestamps(true, true);
-      });
-
-      // 12. Audit Logs
-      await db.schema.createTable('audit_logs', (table) => {
-        table.bigIncrements('id');
-        table.bigInteger('officer_id').unsigned().references('id').inTable('officers');
-        table.string('action');
-        table.string('resource');
-        table.text('details');
-        table.timestamps(true, true);
-      });
-
-      // 13. Activity Logs
-      await db.schema.createTable('activity_logs', (table) => {
-        table.bigIncrements('id');
-        table.bigInteger('officer_id').unsigned().references('id').inTable('officers').onDelete('CASCADE');
-        table.string('type'); // POSTED, COMMENTED, LIKED, ATTENDANCE_VIEWED, RESOURCE_BOOKED, CIRCLE_CREATED, etc.
-        table.string('title');
-        table.text('description');
-        table.string('link').nullable();
-        table.timestamps(true, true);
-      });
-
-      // 14. Albums & Photos
-      await db.schema.createTable('albums', (table) => {
-        table.bigIncrements('id');
-        table.string('name');
-        table.string('description');
-        table.string('cover_url').nullable();
-        table.boolean('is_restricted').defaultTo(false);
-        table.bigInteger('officer_id').unsigned().references('id').inTable('officers').onDelete('SET NULL');
-        table.text('allowed_roles').nullable();
-        table.text('allowed_departments').nullable();
-        table.timestamps(true, true);
-      });
-
-      await db.schema.createTable('photos', (table) => {
-        table.bigIncrements('id');
-        table.bigInteger('album_id').unsigned().references('id').inTable('albums').onDelete('CASCADE');
-        table.bigInteger('officer_id').unsigned().references('id').inTable('officers').onDelete('SET NULL');
-        table.string('url');
-        table.string('caption');
-        table.timestamps(true, true);
-      });
-
-      // 15. Unavailability
-      await db.schema.createTable('unavailability', (table) => {
-        table.bigIncrements('id');
-        table.bigInteger('officer_id').unsigned().references('id').inTable('officers').onDelete('CASCADE');
-        table.date('date');
-        table.enum('slot', ['FULL', 'AM', 'PM']).defaultTo('FULL');
-        table.string('reason').nullable();
-        table.timestamps(true, true);
-      });
-
-      // 16. Notifications
-      await db.schema.createTable('notifications', (table) => {
-        table.bigIncrements('id');
-        table.bigInteger('officer_id').unsigned().references('id').inTable('officers').onDelete('CASCADE').nullable(); // null means global
-        table.string('title');
-        table.text('message');
-        table.string('type').defaultTo('INFO');
-        table.boolean('is_read').defaultTo(false);
-        table.timestamps(true, true);
-      });
-
-      // 17. Holidays
-      await db.schema.createTable('holidays', (table) => {
-        table.bigIncrements('id');
-        table.date('date');
-        table.string('name');
-        table.timestamps(true, true);
-      });
-
-      // 18. Resources
-      await db.schema.createTable('resources', (table) => {
-        table.bigIncrements('id');
-        table.string('name');
-        table.string('type');
-        table.text('description').nullable();
-        table.text('specs').nullable();
-        table.string('status').defaultTo('AVAILABLE');
-        table.timestamps(true, true);
-      });
-
-      await db.schema.createTable('resource_bookings', (table) => {
-        table.bigIncrements('id');
-        table.bigInteger('resource_id').unsigned().references('id').inTable('resources').onDelete('CASCADE');
-        table.bigInteger('officer_id').unsigned().references('id').inTable('officers').onDelete('CASCADE');
-        table.datetime('start_time');
-        table.datetime('end_time');
-        table.string('purpose').nullable();
-        table.string('destination').nullable();
-        table.enum('status', ['PENDING', 'APPROVED', 'REJECTED']).defaultTo('PENDING');
-        table.timestamps(true, true);
-      });
-
-      // 19. Layout Mapping
-      await db.schema.createTable('layout_mapping', (table) => {
-        table.bigIncrements('id');
-        table.string('section_id');
-        table.string('officer_id').nullable();
-        table.integer('x');
-        table.integer('y');
-        table.text('elements_json').nullable();
-        table.timestamps(true, true);
-      });
-
-      // 20. Dashboard Status (Strictly for 6 Main Officers)
-      await db.schema.createTable('dashboard_status', (table) => {
-        table.string('slot_id').primary();
-        table.bigInteger('officer_id').unsigned().nullable().references('id').inTable('officers').onDelete('SET NULL');
-        table.string('status').defaultTo('AVAILABLE');
-        table.string('eta').nullable();
-        table.text('remarks').nullable();
-        table.timestamps(true, true);
-      });
-
-      // Seed initial data
-      const hashedPin = '$2b$10$tX.CIzDlSTdrQ4nROIL8GOIwZdSQYS1IOIAeQFNBEUPqAxj2v28PK';
-      await db('officers').insert({
-        biometric_id: '1001',
-        pin: hashedPin,
-        name: 'System Administrator',
-        post: 'IT Admin',
-        department: 'IT',
-        role: 'SA',
-        work_type: 'OFFICE'
-      });
-
-      // Run SQL seeder if available
-      const seeded = await executeSeedSql();
-
-      if (!seeded) {
+      // ensureTables() already seeds the administrator account, runs the SQL
+      // seeder, and fills the dashboard slots, so only the reference data it
+      // does not cover is seeded here.
+      if ((await db('departments').count('id as c').first())?.c === 0) {
         await db('departments').insert([
           { name: 'Administration' },
           { name: 'Finance' },
@@ -733,29 +366,22 @@ async function startServer() {
         ]);
       }
 
-      await db('designations').insert([
-        { name: 'Divisional Secretary' },
-        { name: 'Assistant Divisional Secretary' },
-        { name: 'Chief Clerk' },
-        { name: 'IT Officer' }
-      ]);
-
-      // Seed Dashboard Status Slots
-      const slots = ['ds', 'ads', 'acc', 'ao', 'adp', 'agn'];
-      await db('dashboard_status').insert(
-        slots.map(slot => ({
-          slot_id: slot,
-          status: 'OFFLINE'
-        }))
-      );
+      if ((await db('designations').count('id as c').first())?.c === 0) {
+        await db('designations').insert([
+          { name: 'Divisional Secretary' },
+          { name: 'Assistant Divisional Secretary' },
+          { name: 'Chief Clerk' },
+          { name: 'IT Officer' }
+        ]);
+      }
 
       // Re-enable foreign key checks
-      await db.raw('SET FOREIGN_KEY_CHECKS = 1');
+      if (useMysql) await db.raw('SET FOREIGN_KEY_CHECKS = 1');
 
       res.json({ status: 'success', message: 'Database initialized successfully' });
     } catch (error: any) {
       // Ensure foreign key checks are re-enabled even on error
-      await db.raw('SET FOREIGN_KEY_CHECKS = 1').catch(() => {});
+      if (useMysql) await db.raw('SET FOREIGN_KEY_CHECKS = 1').catch(() => {});
       console.error('Database Setup Error:', error);
       res.status(500).json({ status: 'error', message: error.message });
     }
@@ -1628,6 +1254,7 @@ async function startServer() {
   };
 
   await ensureSchemaUpgrades();
+
 
 
   // --- AUTH ROUTES ---
@@ -2590,20 +2217,18 @@ async function startServer() {
     try {
       const dateParam = req.query.date as string;
       const date = dateParam || new Date().toLocaleDateString('en-CA');
-      console.log(`[ExecutiveStatus] Querying for date: ${date}`);
-      
+
       const allOfficers = await db('officers')
         .whereIn('role', ['EXECUTIVE', 'EX'])
-        .andWhereNot('role', 'SA')
         .select('id', 'name', 'post', 'profile_pic', 'dashboard_status', 'eta');
 
-      const executives = allOfficers.filter(officer => {
+      const executives = allOfficers.filter((officer) => {
         const post = (officer.post || '').toLowerCase();
         return (
           post.includes('divisional secretary') ||
           post.includes('assistant divisional secretary') ||
           post.includes('accountant') ||
-          post.includes('planning') || 
+          post.includes('planning') ||
           post.includes('administrative officer') ||
           post.includes('grama') ||
           post.includes('ds') ||
@@ -2614,43 +2239,59 @@ async function startServer() {
         );
       });
 
-      const statusSummary = await Promise.all(executives.map(async (exec) => {
-        const att = await db('attendance')
-          .where({ officer_id: exec.id, date })
-          .first();
-        
-        const unavail = await db('unavailability')
-          .where({ officer_id: exec.id, date })
-          .first();
+      if (executives.length === 0) {
+        return res.json({ status: 'success', data: [] });
+      }
 
-        // Start with the set dashboard status
-        let status = exec.dashboard_status || 'OFFLINE';
+      // Three bulk reads rather than two queries per executive.
+      const execIds = executives.map((e) => e.id);
+      const [attendanceRows, unavailabilityRows, leaveRows] = await Promise.all([
+        db('attendance').whereIn('officer_id', execIds).where('date', date),
+        db('unavailability').whereIn('officer_id', execIds).where('date', date),
+        db('leaves')
+          .whereIn('officer_id', execIds)
+          .where('status', 'APPROVED')
+          .where('start_date', '<=', date)
+          .where('end_date', '>=', date),
+      ]);
+
+      const attendanceBy = new Map(attendanceRows.map((r: any) => [String(r.officer_id), r]));
+      const unavailabilityBy = new Map(unavailabilityRows.map((r: any) => [String(r.officer_id), r]));
+      const leaveBy = new Map(leaveRows.map((r: any) => [String(r.officer_id), r]));
+
+      const statusSummary = executives.map((exec) => {
+        const key = String(exec.id);
+        const att: any = attendanceBy.get(key);
+        const unavail: any = unavailabilityBy.get(key);
+        const leave: any = leaveBy.get(key);
+
+        let status_label = 'OFFLINE';
         let eta = exec.eta || '';
 
-        // If dashboard status is OFFLINE, fall back to attendance logs
-        if (status === 'OFFLINE') {
-          if (att) {
-            const hasTimeOut = att.time_out && att.time_out !== '00:00:00' && att.time_out !== '00:00';
-            if (!hasTimeOut) {
-              status = 'AVAILABLE';
-            }
-          } else if (unavail) {
-            status = 'BUSY';
-          }
-        }
+        const manual = (exec.dashboard_status || 'OFFLINE').toUpperCase();
 
-        let is_available = false;
-        let is_unavail = false;
-        let status_label = 'OFFLINE';
-
-        if (status === 'AVAILABLE') {
-          is_available = true;
-          status_label = 'AVAILABLE';
-        } else if (status === 'BUSY') {
+        if (manual !== 'OFFLINE' && manual !== 'AVAILABLE') {
+          // An explicitly set status (BUSY, MEETING, OFF TO FIELD...) is a
+          // deliberate act by the officer and outranks anything inferred.
+          status_label = manual.includes('FIELD') ? 'OFF TO FIELD' : manual;
+        } else if (leave) {
+          // Approved leave was never consulted here, so an officer on
+          // sanctioned leave simply read as OFFLINE.
+          status_label = 'ON LEAVE';
+        } else if (unavail) {
+          // Unavailability used to be checked only when there was no
+          // attendance row, so an officer who had scanned in and then marked
+          // themselves unavailable still showed as AVAILABLE.
           status_label = 'BUSY';
-        } else if (status === 'FIELD' || status === 'OFF_TO_FIELD' || status.includes('FIELD')) {
-          status_label = 'OFF TO FIELD';
-          is_unavail = true;
+          eta = unavail.eta || eta;
+        } else if (att) {
+          const hasTimeOut = att.time_out && att.time_out !== '00:00:00' && att.time_out !== '00:00';
+          if (String(att.status || '').includes('FIELD')) status_label = 'OFF TO FIELD';
+          else if (hasTimeOut) status_label = 'LEFT';
+          else if (att.status === 'LEAVE') status_label = 'ON LEAVE';
+          else status_label = 'AVAILABLE';
+        } else if (manual === 'AVAILABLE') {
+          status_label = 'AVAILABLE';
         }
 
         return {
@@ -2658,19 +2299,20 @@ async function startServer() {
           name: exec.name,
           post: exec.post,
           profile_pic: exec.profile_pic,
-          is_available,
-          is_unavail,
+          is_available: status_label === 'AVAILABLE',
+          is_unavail: ['BUSY', 'OFF TO FIELD', 'ON LEAVE', 'LEFT'].includes(status_label),
           status_label,
-          eta
+          eta,
         };
-      }));
+      });
 
       res.json({ status: 'success', data: statusSummary });
     } catch (error: any) {
+      console.error('[ExecutiveStatus] Failed:', error.message);
       res.status(500).json({ status: 'error', message: error.message });
     }
   });
-  
+
   apiRouter.get('/staff', authenticate, async (req, res) => {
     try {
       const staff = await db('officers').select('*');
@@ -3505,6 +3147,27 @@ async function startServer() {
         return res.status(404).json({ status: 'error', message: 'Resource not found' });
       }
 
+      // A resource can only be in one place at a time. Two requests for the same
+      // vehicle at the same hour were both accepted, and both could be approved.
+      // Ranges touching end-to-end do not clash: a booking ending at 11:00 and
+      // another starting at 11:00 are fine.
+      const clash = await db('resource_bookings')
+        .where('resource_id', resource_id)
+        .whereIn('status', ['PENDING', 'APPROVED'])
+        .where('start_time', '<', end_time)
+        .where('end_time', '>', start_time)
+        .first();
+
+      if (clash) {
+        const holder = await db('officers').where('id', clash.officer_id).first();
+        return res.status(409).json({
+          status: 'error',
+          message: `${resource.name} is already booked from ${clash.start_time} to ${clash.end_time}`
+            + (holder ? ` by ${holder.name}` : '')
+            + ` (${String(clash.status).toLowerCase()}).`,
+        });
+      }
+
       const [id] = await db('resource_bookings').insert({
         resource_id,
         start_time,
@@ -4146,101 +3809,114 @@ async function startServer() {
     }
   });
 
-  apiRouter.get('/public-dashboard/data', async (req, res) => {
-    try {
-      const todayDate = new Date().toISOString().split('T')[0];
-      const todayStart = new Date();
-      todayStart.setHours(0,0,0,0);
+  /**
+   * Resets stale dashboard statuses and promotes today's biometric scans to
+   * AVAILABLE.
+   *
+   * This used to run inside GET /public-dashboard/data, which is unauthenticated:
+   * a public read performed several UPDATEs, so anyone could drive database write
+   * load without credentials, and the lobby screen's own refresh loop was writing
+   * on every poll. It now runs on a timer inside the server process, and the
+   * public endpoint only reads.
+   */
+  const refreshPresenceFromBiometrics = async () => {
+    const todayDate = new Date().toISOString().split('T')[0];
+    const todayStart = new Date();
+    todayStart.setHours(0,0,0,0);
 
-      // 1. Daily Reset: If status was updated before today, reset to OFFLINE
-      await db('officers')
-        .where('updated_at', '<', todayStart)
-        .update({
-          dashboard_status: 'OFFLINE',
-          eta: null,
-          updated_at: todayStart // Use midnight so today's scans can sync
-        });
+    // 1. Daily Reset: If status was updated before today, reset to OFFLINE
+    await db('officers')
+      .where('updated_at', '<', todayStart)
+      .update({
+        dashboard_status: 'OFFLINE',
+        eta: null,
+        updated_at: todayStart // Use midnight so today's scans can sync
+      });
 
-      await db('dashboard_status')
-        .where('updated_at', '<', todayStart)
-        .update({
-          status: 'OFFLINE',
-          eta: null,
-          updated_at: todayStart
-        });
+    await db('dashboard_status')
+      .where('updated_at', '<', todayStart)
+      .update({
+        status: 'OFFLINE',
+        eta: null,
+        updated_at: todayStart
+      });
 
-      // 2. Auto-sync biometrics for today - Optimization: Only sync the LATEST scan for each officer
-      const bioLogs = await db('biometric_logs')
-        .where('scan_date', todayDate)
-        .orderBy('scan_time', 'desc'); // Newest first
+    // 2. Auto-sync biometrics for today - Optimization: Only sync the LATEST scan for each officer
+    const bioLogs = await db('biometric_logs')
+      .where('scan_date', todayDate)
+      .orderBy('scan_time', 'desc'); // Newest first
 
-      const processedOfficers = new Set();
-      for (const log of bioLogs) {
-        const hardwareId = String(log.hardware_id).trim();
-        if (processedOfficers.has(hardwareId)) continue;
-        processedOfficers.add(hardwareId);
+    const processedOfficers = new Set();
+    for (const log of bioLogs) {
+      const hardwareId = String(log.hardware_id).trim();
+      if (processedOfficers.has(hardwareId)) continue;
+      processedOfficers.add(hardwareId);
 
-        // Robust matching: try exact string, then numeric, then padded
-        // CRITICAL: hardwareId must not be empty/null to match
-        if (!hardwareId || hardwareId === '0' || hardwareId === '') continue;
+      // Robust matching: try exact string, then numeric, then padded
+      // CRITICAL: hardwareId must not be empty/null to match
+      if (!hardwareId || hardwareId === '0' || hardwareId === '') continue;
 
-        const officer = await db('officers')
-          .where(function() {
-            this.where('biometric_id', hardwareId);
+      const officer = await db('officers')
+        .where(function() {
+          this.where('biometric_id', hardwareId);
+          
+          const numId = Number(hardwareId);
+          if (!isNaN(numId)) {
+              this.orWhereRaw('CAST(biometric_id AS SIGNED) = ?', [numId]);
+              const paddedId = String(numId).padStart(3, '0');
+              if (paddedId !== hardwareId) {
+                this.orWhere('biometric_id', paddedId);
+              }
+          }
+        })
+        .whereNotNull('biometric_id')
+        .whereNot('biometric_id', '')
+        .first();
+
+      if (officer) {
+        console.log(`Matched officer: ${officer.name} (ID: ${officer.id}, Role: ${officer.role}) for hardware_id: ${hardwareId}`);
+        if (officer.dashboard_status !== 'AVAILABLE') {
+          const timeParts = log.scan_time.split(':');
+          if (timeParts.length >= 2) {
+            const h = parseInt(timeParts[0]);
+            const m = parseInt(timeParts[1]);
+            const s = timeParts[2] ? parseInt(timeParts[2]) : 0;
             
-            const numId = Number(hardwareId);
-            if (!isNaN(numId)) {
-                this.orWhereRaw('CAST(biometric_id AS SIGNED) = ?', [numId]);
-                const paddedId = String(numId).padStart(3, '0');
-                if (paddedId !== hardwareId) {
-                  this.orWhere('biometric_id', paddedId);
-                }
-            }
-          })
-          .whereNotNull('biometric_id')
-          .whereNot('biometric_id', '')
-          .first();
-
-        if (officer) {
-          console.log(`Matched officer: ${officer.name} (ID: ${officer.id}, Role: ${officer.role}) for hardware_id: ${hardwareId}`);
-          if (officer.dashboard_status !== 'AVAILABLE') {
-            const timeParts = log.scan_time.split(':');
-            if (timeParts.length >= 2) {
-              const h = parseInt(timeParts[0]);
-              const m = parseInt(timeParts[1]);
-              const s = timeParts[2] ? parseInt(timeParts[2]) : 0;
+            if (!isNaN(h) && !isNaN(m)) {
+              // Create scan datetime in local context
+              const scanTime = new Date();
+              scanTime.setHours(h, m, s, 0);
+              const updatedAt = new Date(officer.updated_at);
               
-              if (!isNaN(h) && !isNaN(m)) {
-                // Create scan datetime in local context
-                const scanTime = new Date();
-                scanTime.setHours(h, m, s, 0);
-                const updatedAt = new Date(officer.updated_at);
-                
-                if (scanTime.getTime() > updatedAt.getTime()) {
-                  console.log(`Updating ${officer.name} to AVAILABLE via biometric log`);
-                  await db('officers').where('id', officer.id).update({ 
-                    dashboard_status: 'AVAILABLE',
-                    eta: null,
-                    updated_at: new Date() // Use real date object
-                  });
+              if (scanTime.getTime() > updatedAt.getTime()) {
+                console.log(`Updating ${officer.name} to AVAILABLE via biometric log`);
+                await db('officers').where('id', officer.id).update({ 
+                  dashboard_status: 'AVAILABLE',
+                  eta: null,
+                  updated_at: new Date() // Use real date object
+                });
 
-                  // ALSO Update dashboard_status table if this officer is assigned to a slot
-                  await db('dashboard_status').where('officer_id', officer.id).update({
-                    status: 'AVAILABLE',
-                    eta: null,
-                    updated_at: new Date()
-                  });
+                // ALSO Update dashboard_status table if this officer is assigned to a slot
+                await db('dashboard_status').where('officer_id', officer.id).update({
+                  status: 'AVAILABLE',
+                  eta: null,
+                  updated_at: new Date()
+                });
 
-                  await db('biometric_logs').where('id', log.id).update({ status: 'SYNCED' });
-                }
+                await db('biometric_logs').where('id', log.id).update({ status: 'SYNCED' });
               }
             }
           }
-        } else {
-          console.log(`No officer found for biometric hardware_id: ${hardwareId}`);
         }
+      } else {
+        console.log(`No officer found for biometric hardware_id: ${hardwareId}`);
       }
+    }
+  };
 
+  apiRouter.get('/public-dashboard/data', async (req, res) => {
+    try {
+      // Read-only. Presence refresh happens on a timer, not on a public GET.
       const [notices, events, videos, alerts, settings, queue] = await Promise.all([
         db('dashboard_notices').where('is_active', true),
         db('dashboard_events').where('is_active', true),
@@ -4885,8 +4561,24 @@ async function startServer() {
     res.status(500).json({ status: 'error', message: err.message });
   });
 
+  // Keep the public display's presence data current without letting an
+  // unauthenticated request trigger writes. GET /public-dashboard/data used to
+  // perform the updates itself on every poll.
+  const PRESENCE_REFRESH_MS = Number(process.env.PRESENCE_REFRESH_MS) || 60000;
+  const runPresenceRefresh = async () => {
+    try {
+      await refreshPresenceFromBiometrics();
+    } catch (err: any) {
+      console.error('[Presence] Scheduled refresh failed:', err.message);
+    }
+  };
+  void runPresenceRefresh();
+  const presenceTimer = setInterval(runPresenceRefresh, PRESENCE_REFRESH_MS);
+  presenceTimer.unref?.();
+
   const httpServer = app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`[Presence] Refreshing every ${PRESENCE_REFRESH_MS}ms`);
   });
 
   // --- Live Broadcast WebSocket Stream Server ---

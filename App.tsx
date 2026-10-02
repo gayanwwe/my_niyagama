@@ -228,13 +228,54 @@ const AppContent: React.FC = () => {
   return (
     <div className="min-h-screen bg-[var(--background)] text-[var(--foreground)] flex flex-col font-sans overflow-hidden transition-colors duration-300">
       <nav className="h-14 md:h-16 bg-[var(--card)] border-b border-[var(--border)] flex items-center px-4 md:px-6 sticky top-0 z-[100] shadow-sm">
-        <MainTabs
-          user={user}
-          lang={lang}
-          isMobilePortrait={isMobilePortrait}
-          navigate={navigate}
-          unreadCount={unreadCount}
-        />
+        <div className={`items-center gap-2 md:gap-3 flex-none w-auto min-w-[60px] lg:min-w-[180px] ${isMobilePortrait ? 'hidden' : 'flex'}`}>
+          <Link to="/" className="w-10 h-10 bg-white rounded-xl flex items-center justify-center shadow-lg hover:scale-105 transition-all flex-shrink-0 p-1.5 border border-slate-100">
+            <img src="/logo.png" alt="N" className="w-full h-full object-contain" />
+          </Link>
+          <span className="hidden lg:block text-lg font-black text-slate-800 tracking-tighter">My Niyagama</span>
+        </div>
+
+        <div className="flex-1 h-full flex items-center justify-center mx-2 overflow-hidden">
+          <div className="flex h-full max-w-[900px] w-full items-center justify-center">
+            <MainTabs
+              user={user}
+              lang={lang}
+              isMobilePortrait={isMobilePortrait}
+              unreadCount={unreadCount}
+            />
+          </div>
+        </div>
+
+        <div className={`items-center gap-1 md:gap-3 flex-none w-auto min-w-[60px] lg:min-w-[180px] justify-end ${isMobilePortrait ? 'hidden' : 'flex'}`}>
+          <button
+            onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
+            className="p-2 bg-[var(--background)] rounded-full text-slate-500 hover:text-[#1877F2] transition-colors"
+            title="Toggle Theme"
+          >
+            {theme === 'light' ? '🌙' : '☀️'}
+          </button>
+          <button
+            onClick={() => setLang(lang === 'EN' ? 'SI' : 'EN')}
+            className="px-2 md:px-3 py-1.5 bg-[var(--background)] rounded-lg text-[10px] font-black uppercase tracking-widest text-slate-500 hover:bg-slate-100 transition-colors hidden sm:block whitespace-nowrap"
+          >
+            {lang === 'EN' ? 'සිං' : 'EN'}
+          </button>
+          <Link to="/profile" className="flex items-center gap-2 p-1 pl-1 md:pl-3 bg-[var(--background)] rounded-full border border-[var(--border)] hover:bg-slate-100 group transition-all flex-shrink-0">
+            <span className="text-[10px] font-black text-slate-600 uppercase tracking-widest hidden xl:block pr-1">{user.name?.split(' ')[0]}</span>
+            <img
+              src={user.profile_pic || `https://ui-avatars.com/api/?name=${encodeURIComponent(user.name || 'Officer')}&background=1877F2&color=fff`}
+              className="w-8 h-8 rounded-full border-2 border-white shadow-sm group-hover:scale-110 transition-transform flex-none"
+              alt="profile"
+            />
+          </Link>
+          <button
+            onClick={handleLogout}
+            className="p-2 md:p-2.5 bg-[var(--background)] text-slate-500 rounded-full hover:bg-red-50 hover:text-red-500 transition-all flex-none"
+            title="Logout"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
+          </button>
+        </div>
       </nav>
       <main className="flex-1 relative overflow-hidden">
         <div className="h-full overflow-x-hidden overflow-y-auto p-4 md:p-8 lg:p-12 max-w-[1600px] w-full mx-auto">
