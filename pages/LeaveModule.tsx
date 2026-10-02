@@ -62,27 +62,6 @@ const LeaveModule: React.FC<Props> = ({ user, lang }) => {
     }
   };
 
-  // Calculate leave duration in days for balance checking
-  const calculateLeaveDays = (type: string, start: string, end: string): number => {
-    const s = new Date(start);
-    const e = new Date(end);
-    const diffDays = Math.floor((e.getTime() - s.getTime()) / (1000 * 60 * 60 * 24));
-    
-    if (type === 'CASUAL' || type === 'VACATION') {
-      return diffDays + 1; // inclusive counting
-    }
-    if (type === 'SICK') {
-      return 1; // Sick leave typically 1 day at a time
-    }
-    if (type === 'HALF_DAY') {
-      return 0.5;
-    }
-    if (type === 'SHORT_LEAVE') {
-      return 0; // 2 SL = 1 casual day, handled in balance calc
-    }
-    return 0;
-  };
-
   const handleApply = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSaving(true);
@@ -102,28 +81,9 @@ const LeaveModule: React.FC<Props> = ({ user, lang }) => {
       return;
     }
     
-    // Calculate days and check balance before submitting
-    const days = calculateLeaveDays(parsedForm.type, parsedForm.start_date, parsedForm.end_date);
-    
-    // Client-side balance check
-    if (balances) {
-      let available = 0;
-      
-      if (parsedForm.type === 'CASUAL') {
-        available = (balances.casual_total || 21) - (balances.casual || 0);
-      } else if (parsedForm.type === 'SICK') {
-        available = (balances.sick_total || 7) - (balances.sick || 0);
-      } else if (parsedForm.type === 'VACATION') {
-        available = (balances.vacation_total || 21) - (balances.vacation || 0);
-      }
-      
-      if (days > 0 && days > available) {
-        toast.error(`Insufficient ${parsedForm.type.toLowerCase()} leave balance. Available: ${available} days, Requested: ${days} days.`);
-        setIsSaving(false);
-        return;
-      }
-    }
-    
+    // Balance enforcement lives on the server (computeLeaveBalances), which is
+    // the same calculation /leaves/balances reports. Duplicating it here meant
+    // the two could disagree, so we surface the server's message instead.
     try {
       await api.applyForLeave(parsedForm);
       await loadData();

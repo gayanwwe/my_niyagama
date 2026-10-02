@@ -253,60 +253,10 @@ async function startServer() {
 
   console.log("DB USER:", process.env.DB_USER);
   
-  // Migration: Add cover_url to albums if it doesn't exist
-  try {
-    const hasAlbumCover = await db.schema.hasColumn('albums', 'cover_url');
-    if (!hasAlbumCover) {
-      await db.schema.table('albums', (table) => {
-        table.string('cover_url').nullable();
-      });
-      console.log('Added cover_url column to albums');
-    }
-  } catch (e) {
-    console.error('Migration failed for albums (non-critical):', e);
-  }
-
-  // Migration: Add grace_day_used to attendance if it doesn't exist
-  try {
-    const hasGraceDay = await db.schema.hasColumn('attendance', 'grace_day_used');
-    if (!hasGraceDay) {
-      await db.schema.table('attendance', (table) => {
-        table.boolean('grace_day_used').defaultTo(false);
-      });
-      console.log('Added grace_day_used column to attendance');
-    }
-  } catch (e) {
-    console.error('Migration failed for attendance (non-critical):', e);
-  }
-
-  // Migration: Add images column to community_posts if it doesn't exist
-  try {
-    const hasCommunityPosts = await db.schema.hasTable('community_posts');
-    if (hasCommunityPosts) {
-      const hasImages = await db.schema.hasColumn('community_posts', 'images');
-      if (!hasImages) {
-        await db.schema.table('community_posts', (table) => {
-          table.text('images').nullable();
-        });
-        console.log('Added images column to community_posts');
-      }
-    }
-  } catch (e) {
-    console.error('Migration failed for community_posts (non-critical):', e);
-  }
-
-  // Migration: Ensure attendance status is string(50) for long status names
-  try {
-    const hasAttendance = await db.schema.hasTable('attendance');
-    if (hasAttendance) {
-      if (useMysql) {
-        await db.raw('ALTER TABLE attendance MODIFY COLUMN status VARCHAR(50) DEFAULT "PRESENT"');
-        console.log('Attendance status column updated to VARCHAR(50) in MySQL');
-      }
-    }
-  } catch (e) {
-    console.error('Migration failed for attendance status:', e);
-  }
+  // NOTE: schema upgrades used to run here, before ensureTables() had created
+  // the tables, so on a fresh database every one failed with "no such table"
+  // and was swallowed as non-critical. They now run in ensureSchemaUpgrades(),
+  // which is invoked immediately after ensureTables().
 
   // --- DATABASE SETUP ROUTE ---
   apiRouter.post('/setup-db', authenticate, requireRole('SA'), async (req, res) => {
@@ -433,12 +383,12 @@ async function startServer() {
       await db.schema.createTable('leaves', (table) => {
         table.bigIncrements('id');
         table.bigInteger('officer_id').unsigned().references('id').inTable('officers').onDelete('CASCADE');
-        table.enum('type', ['CASUAL', 'SICK', 'VACATION', 'DUTY']);
+        table.string('type', 50); // CASUAL|SICK|VACATION|DUTY|SHORT_LEAVE|HALF_DAY
         table.date('start_date');
         table.date('end_date');
         table.string('sub_type'); // AM/PM for SHORT_LEAVE/HALF_DAY
         table.text('reason');
-        table.enum('status', ['PENDING', 'APPROVED', 'REJECTED']).defaultTo('PENDING');
+        table.string('status', 50).defaultTo('PENDING');
         table.boolean('is_deleted').defaultTo(false);  // Soft delete flag
         table.timestamp('deleted_at').nullable();      // Soft delete timestamp
         table.timestamps(true, true);
@@ -804,6 +754,8 @@ async function startServer() {
         table.date('join_date').nullable();
         table.string('dashboard_status').defaultTo('OFFLINE');
         table.string('eta').nullable();
+        table.boolean('is_deleted').defaultTo(false);
+        table.timestamp('deleted_at').nullable();
         table.timestamps(true, true);
       });
     }
@@ -981,11 +933,14 @@ async function startServer() {
       await db.schema.createTable('leaves', (table) => {
         table.bigIncrements('id');
         table.bigInteger('officer_id').unsigned().references('id').inTable('officers').onDelete('CASCADE');
-        table.string('type');
+        table.string('type', 50);
         table.date('start_date');
         table.date('end_date');
+        table.string('sub_type').nullable(); // AM/PM for SHORT_LEAVE / HALF_DAY
         table.text('reason');
-        table.string('status').defaultTo('PENDING');
+        table.string('status', 50).defaultTo('PENDING');
+        table.boolean('is_deleted').defaultTo(false);
+        table.timestamp('deleted_at').nullable();
         table.timestamps(true, true);
       });
     }
@@ -998,11 +953,14 @@ async function startServer() {
         table.date('date');
         table.time('time_in').nullable();
         table.time('time_out').nullable();
-        table.string('status').defaultTo('PRESENT');
+        table.string('status', 50).defaultTo('PRESENT');
         table.boolean('is_temporary').defaultTo(false);
         table.integer('short_leave_minutes').defaultTo(0);
+        table.boolean('grace_day_used').defaultTo(false);
         table.enum('is_half_day', ['AM', 'PM']).nullable();
-        table.string('leave_type'); // CASUAL | SICK | VACATION | DUTY - clarifies LEAVE type
+        table.string('leave_type').nullable(); // CASUAL | SICK | VACATION | DUTY - clarifies LEAVE type
+        table.boolean('is_deleted').defaultTo(false);
+        table.timestamp('deleted_at').nullable();
         table.timestamps(true, true);
       });
     }
@@ -1518,6 +1476,100 @@ async function startServer() {
   };
 
   await ensureTables();
+
+  /**
+   * Idempotent schema upgrades. Runs AFTER ensureTables(), so every table it
+   * touches is guaranteed to exist — the previous versions of these migrations
+   * ran before table creation and silently failed on any fresh database.
+   *
+   * Covers databases created by either schema path (/setup-db or ensureTables),
+   * plus existing production databases that predate these columns.
+   */
+  const ensureSchemaUpgrades = async () => {
+    const columns: { table: string; column: string; create: (t: any) => void }[] = [
+      // Without this column every attendance insert in /attendance/import fails.
+      { table: 'attendance', column: 'grace_day_used', create: (t) => t.boolean('grace_day_used').defaultTo(false) },
+      { table: 'attendance', column: 'leave_type', create: (t) => t.string('leave_type').nullable() },
+      // The leave form submits sub_type on every application; without the
+      // column the insert fails and no leave can be applied for at all.
+      { table: 'leaves', column: 'sub_type', create: (t) => t.string('sub_type').nullable() },
+      { table: 'albums', column: 'cover_url', create: (t) => t.string('cover_url').nullable() },
+      { table: 'community_posts', column: 'images', create: (t) => t.text('images').nullable() },
+      // Soft-delete columns, mirrored from the /setup-db schema so both paths agree.
+      { table: 'officers', column: 'is_deleted', create: (t) => t.boolean('is_deleted').defaultTo(false) },
+      { table: 'officers', column: 'deleted_at', create: (t) => t.timestamp('deleted_at').nullable() },
+      { table: 'attendance', column: 'is_deleted', create: (t) => t.boolean('is_deleted').defaultTo(false) },
+      { table: 'attendance', column: 'deleted_at', create: (t) => t.timestamp('deleted_at').nullable() },
+      { table: 'leaves', column: 'is_deleted', create: (t) => t.boolean('is_deleted').defaultTo(false) },
+      { table: 'leaves', column: 'deleted_at', create: (t) => t.timestamp('deleted_at').nullable() },
+    ];
+
+    for (const { table, column, create } of columns) {
+      try {
+        if (!(await db.schema.hasTable(table))) continue;
+        if (await db.schema.hasColumn(table, column)) continue;
+        await db.schema.alterTable(table, (t) => create(t));
+        console.log(`[Schema] Added ${table}.${column}`);
+      } catch (err: any) {
+        console.error(`[Schema] FAILED to add ${table}.${column}:`, err.message);
+      }
+    }
+
+    // Widen columns that hold the longer status/type names the app now uses.
+    if (useMysql) {
+      const widenings = [
+        'ALTER TABLE attendance MODIFY COLUMN status VARCHAR(50) DEFAULT "PRESENT"',
+        // The leave form offers SHORT_LEAVE and HALF_DAY, which do not fit the
+        // original ENUM('CASUAL','SICK','VACATION','DUTY').
+        'ALTER TABLE leaves MODIFY COLUMN type VARCHAR(50)',
+        'ALTER TABLE leaves MODIFY COLUMN status VARCHAR(50) DEFAULT "PENDING"',
+      ];
+      for (const sql of widenings) {
+        try {
+          await db.raw(sql);
+          console.log(`[Schema] ${sql}`);
+        } catch (err: any) {
+          console.error(`[Schema] FAILED: ${sql} -`, err.message);
+        }
+      }
+    }
+
+    // Indexes for the hottest query patterns. These were previously declared
+    // only inside the /setup-db createTable calls, which almost never run, so
+    // no database ever received them. Creating an existing index throws, which
+    // is the idempotency check.
+    const indexes: { table: string; cols: string[]; name: string }[] = [
+      { table: 'attendance', cols: ['officer_id', 'date'], name: 'attendance_officer_date_idx' },
+      { table: 'attendance', cols: ['date'], name: 'attendance_date_idx' },
+      { table: 'attendance', cols: ['status'], name: 'attendance_status_idx' },
+      { table: 'biometric_logs', cols: ['hardware_id', 'scan_date'], name: 'biometric_logs_hw_date_idx' },
+      { table: 'biometric_logs', cols: ['scan_date'], name: 'biometric_logs_scan_date_idx' },
+      { table: 'leaves', cols: ['officer_id', 'status'], name: 'leaves_officer_status_idx' },
+      { table: 'leaves', cols: ['start_date', 'end_date'], name: 'leaves_date_range_idx' },
+      { table: 'officers', cols: ['department'], name: 'officers_department_idx' },
+      { table: 'officers', cols: ['role'], name: 'officers_role_idx' },
+      { table: 'activity_logs', cols: ['officer_id'], name: 'activity_logs_officer_idx' },
+      { table: 'notifications', cols: ['officer_id'], name: 'notifications_officer_idx' },
+    ];
+
+    for (const { table, cols, name } of indexes) {
+      try {
+        if (!(await db.schema.hasTable(table))) continue;
+        let missing = false;
+        for (const c of cols) {
+          if (!(await db.schema.hasColumn(table, c))) { missing = true; break; }
+        }
+        if (missing) continue;
+        await db.schema.alterTable(table, (t) => t.index(cols, name));
+        console.log(`[Schema] Created index ${name}`);
+      } catch {
+        // Already exists (the common case) — nothing to do.
+      }
+    }
+  };
+
+  await ensureSchemaUpgrades();
+
 
   // --- AUTH ROUTES ---
   apiRouter.post('/login', loginLimiter, async (req, res) => {
@@ -2732,210 +2784,240 @@ async function startServer() {
     }
   });
 
+  // --- LEAVE ACCOUNTING (single source of truth) ---
+  // GET /leaves/balances and POST /leaves previously each had their own copy of
+  // this arithmetic, and the two disagreed: one counted half-days and the other
+  // did not, and the application check billed sick/vacation days against the
+  // casual entitlement. Both now call computeLeaveBalances().
+
+  const LEAVE_ENTITLEMENTS = { CASUAL: 21, SICK: 7, VACATION: 21 };
+
+  /**
+   * Normalises a date from either driver to 'YYYY-MM-DD'. sqlite3 returns DATE
+   * columns as strings, mysql2 returns JS Date objects at local midnight.
+   */
+  const toDateKey = (value: any): string => {
+    if (value instanceof Date) {
+      const y = value.getFullYear();
+      const m = String(value.getMonth() + 1).padStart(2, '0');
+      const d = String(value.getDate()).padStart(2, '0');
+      return `${y}-${m}-${d}`;
+    }
+    return String(value).slice(0, 10);
+  };
+
+  /**
+   * Every calendar day in an inclusive range, as date keys. A reversed range
+   * yields nothing rather than a negative count — a reversed range used to
+   * produce negative days that silently cancelled out genuine leave.
+   */
+  const eachDateKey = (start: any, end: any): string[] => {
+    const first = toDateKey(start);
+    const last = toDateKey(end);
+    if (!first || !last || last < first) return [];
+    const keys: string[] = [];
+    // Parsed with an explicit time so date arithmetic stays in local time.
+    const cursor = new Date(`${first}T00:00:00`);
+    const stop = new Date(`${last}T00:00:00`);
+    if (Number.isNaN(cursor.getTime()) || Number.isNaN(stop.getTime())) return [];
+    while (cursor <= stop) {
+      keys.push(toDateKey(cursor));
+      cursor.setDate(cursor.getDate() + 1);
+    }
+    return keys;
+  };
+
+  /**
+   * An officer's leave usage for a year, reconciling both ledgers:
+   * approved requests in `leaves`, and days the attendance ledger marks as
+   * LEAVE / HALF_DAY / SHORT_LEAVE. A day present in both is counted once.
+   */
+  const computeLeaveBalances = async (officerId: any, year: number = new Date().getFullYear()) => {
+    const startOfYear = `${year}-01-01`;
+    const endOfYear = `${year}-12-31`;
+
+    const [approvedLeaves, attendanceLeaves] = await Promise.all([
+      db('leaves')
+        .where({ officer_id: officerId, status: 'APPROVED' })
+        .where(function () {
+          // Include leave that starts in a previous year but runs into this one.
+          this.whereBetween('start_date', [startOfYear, endOfYear])
+            .orWhereBetween('end_date', [startOfYear, endOfYear]);
+        }),
+      db('attendance')
+        .where('officer_id', officerId)
+        .whereBetween('date', [startOfYear, endOfYear])
+        .whereIn('status', ['LEAVE', 'HALF_DAY', 'SHORT_LEAVE']),
+    ]);
+
+    const balances = {
+      casual_total: LEAVE_ENTITLEMENTS.CASUAL,
+      sick_total: LEAVE_ENTITLEMENTS.SICK,
+      vacation_total: LEAVE_ENTITLEMENTS.VACATION,
+      casual: 0,
+      sick: 0,
+      vacation: 0,
+      duty: 0,
+      short_leave_count: 0,
+      half_day_count: 0,
+    };
+
+    // Days already accounted for by an approved request, so an attendance row
+    // for the same day is not charged a second time.
+    const coveredDates = new Set<string>();
+    const shortLeavesPerMonth: Record<string, number> = {};
+
+    for (const leave of approvedLeaves) {
+      // Only days falling inside this year count against this year's entitlement.
+      const daysInYear = eachDateKey(leave.start_date, leave.end_date)
+        .filter((k) => k >= startOfYear && k <= endOfYear);
+      daysInYear.forEach((k) => coveredDates.add(k));
+      const n = daysInYear.length;
+      if (n === 0) continue;
+
+      switch (leave.type) {
+        case 'CASUAL': balances.casual += n; break;
+        case 'SICK': balances.sick += n; break;
+        case 'VACATION': balances.vacation += n; break;
+        case 'DUTY': balances.duty += n; break; // duty leave consumes no entitlement
+        case 'HALF_DAY':
+          balances.half_day_count += 0.5 * n;
+          break;
+        case 'SHORT_LEAVE':
+          for (const k of daysInYear) {
+            const monthKey = k.slice(0, 7);
+            shortLeavesPerMonth[monthKey] = (shortLeavesPerMonth[monthKey] || 0) + 1;
+          }
+          break;
+        default: break;
+      }
+    }
+
+    for (const row of attendanceLeaves) {
+      const key = toDateKey(row.date);
+      if (coveredDates.has(key)) continue; // already charged via an approved request
+      if (row.status === 'LEAVE') {
+        balances.casual += 1;
+      } else if (row.status === 'HALF_DAY') {
+        balances.half_day_count += 0.5;
+      } else if (row.status === 'SHORT_LEAVE') {
+        const monthKey = key.slice(0, 7);
+        shortLeavesPerMonth[monthKey] = (shortLeavesPerMonth[monthKey] || 0) + 1;
+      }
+    }
+
+    // Conversions into casual leave. Short leaves convert per month, because the
+    // entitlement is two per month (ATTENDANCE_RULES.SHORT_LEAVE_COUNT).
+    balances.short_leave_count = Object.values(shortLeavesPerMonth).reduce((a, b) => a + b, 0);
+    for (const monthlyCount of Object.values(shortLeavesPerMonth)) {
+      balances.casual += Math.floor(monthlyCount / 2);
+    }
+    balances.casual += balances.half_day_count;
+
+    return balances;
+  };
+
+  /** Days a prospective request would consume, by entitlement bucket. */
+  const leaveRequestCost = (type: string, startDate: any, endDate: any): number => {
+    const n = eachDateKey(startDate, endDate).length;
+    if (type === 'HALF_DAY') return 0.5;
+    if (type === 'SHORT_LEAVE') return 0; // charged via the per-month conversion
+    if (type === 'DUTY') return 0;        // consumes no entitlement
+    return n;
+  };
+
   apiRouter.get('/leaves/balances', authenticate, async (req: any, res) => {
     try {
-      const officer_id = req.query.officer_id || req.user.id;
-      const currentYear = new Date().getFullYear();
-      const startOfYear = `${currentYear}-01-01`;
-      const endOfYear = `${currentYear}-12-31`;
-
-      // 1. Get approved leaves from the leaves table
-      const approvedLeaves = await db('leaves')
-        .where({ officer_id, status: 'APPROVED' })
-        .whereBetween('start_date', [startOfYear, endOfYear]);
-
-      // 2. Get IDs of approved leaves for overlap detection
-      const approvedLeaveDateRanges = approvedLeaves.map(l => ({
-        start: new Date(l.start_date).getTime(),
-        end: new Date(l.end_date).getTime()
-      }));
-
-      // 3. Get attendance leaves that are NOT covered by approved leave periods
-      const allAttendanceLeaves = await db('attendance')
-        .where('officer_id', officer_id)
-        .whereBetween('date', [startOfYear, endOfYear])
-        .whereIn('status', ['LEAVE', 'HALF_DAY', 'SHORT_LEAVE']);
-
-      // Filter out attendance days within approved leave periods
-      const uncoveredAttendanceLeaves = allAttendanceLeaves.filter(a => {
-        const aDate = new Date(a.date).getTime();
-        return !approvedLeaveDateRanges.some(range => 
-          aDate >= range.start && aDate <= range.end
-        );
-      });
-
-      // 4. Initialize balances
-      const balances = {
-        casual_total: 21,
-        sick_total: 7,
-        vacation_total: 21,
-        casual: 0,
-        sick: 0,
-        vacation: 0,
-        short_leave_count: 0,
-        half_day_count: 0
-      };
-
-      // 5. Count approved leaves by type
-      approvedLeaves.forEach(l => {
-        const start = new Date(l.start_date);
-        const end = new Date(l.end_date);
-        const days = Math.floor((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1;
-        
-        if (l.type === 'CASUAL') balances.casual += days;
-        if (l.type === 'SICK') balances.sick += days;
-        if (l.type === 'VACATION') balances.vacation += days;
-      });
-
-      // 6. Count uncovered attendance leaves and track short leaves per month
-      const shortLeavesPerMonth: Record<string, number> = {};
-      uncoveredAttendanceLeaves.forEach(a => {
-        if (a.status === 'HALF_DAY') balances.half_day_count += 0.5;
-        if (a.status === 'SHORT_LEAVE') {
-          // Group by month (YYYY-MM format)
-          const aDate = new Date(a.date);
-          const monthKey = `${aDate.getFullYear()}-${(aDate.getMonth() + 1).toString().padStart(2, '0')}`;
-          shortLeavesPerMonth[monthKey] = (shortLeavesPerMonth[monthKey] || 0) + 1;
-        }
-        // Only count as casual if truly uncovered (not in approved leaves)
-        if (a.status === 'LEAVE') {
-          balances.casual += 1;
-        }
-      });
-
-      // 7. Apply conversions - per-month short leave deduction
-      // For each month, 2 short leaves = 1 casual day deducted
-      Object.values(shortLeavesPerMonth).forEach(monthlySLCount => {
-        balances.casual += Math.floor(monthlySLCount / 2);
-      });
-      balances.short_leave_count = Object.values(shortLeavesPerMonth).reduce((sum, count) => sum + count, 0);
-
+      // An officer may only read their own balance; admins may read anyone's.
+      const requested = req.query.officer_id;
+      if (requested && String(requested) !== String(req.user.id) && !ADMIN_ROLES.includes(req.user.role)) {
+        return res.status(403).json({ status: 'error', message: 'Forbidden: you may only view your own leave balance' });
+      }
+      const officer_id = requested || req.user.id;
+      const balances = await computeLeaveBalances(officer_id);
       res.json({ status: 'success', data: balances });
     } catch (error: any) {
       res.status(500).json({ status: 'error', message: error.message });
     }
   });
+
   apiRouter.post('/leaves', authenticate, async (req: any, res) => {
     try {
-      const { type, start_date, end_date, reason } = req.body;
+      const { type, sub_type, start_date, end_date, reason } = req.body || {};
 
-      // P0: Validate balance before applying for leave
-      const currentYear = new Date().getFullYear();
-      const startOfYear = `${currentYear}-01-01`;
-      const endOfYear = `${currentYear}-12-31`;
-
-      // Get approved leaves for this officer this year
-      const approvedLeaves = await db('leaves')
-        .where({ officer_id: req.user.id, status: 'APPROVED' })
-        .whereBetween('start_date', [startOfYear, endOfYear]);
-
-      // Calculate total approved days this year
-      let approvedDays = 0;
-      approvedLeaves.forEach(l => {
-        const start = new Date(l.start_date);
-        const end = new Date(l.end_date);
-        approvedDays += Math.floor((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1;
-      });
-
-      // Calculate uncovered attendance days for this officer this year
-      const allAttendanceLeaves = await db('attendance')
-        .where('officer_id', req.user.id)
-        .whereBetween('date', [startOfYear, endOfYear])
-        .whereIn('status', ['LEAVE', 'HALF_DAY', 'SHORT_LEAVE']);
-
-      const approvedLeaveDateRanges = approvedLeaves.map(l => ({
-        start: new Date(l.start_date).getTime(),
-        end: new Date(l.end_date).getTime()
-      }));
-
-      const uncoveredAttendanceLeaves = allAttendanceLeaves.filter(a => {
-        const aDate = new Date(a.date).getTime();
-        return !approvedLeaveDateRanges.some(range => 
-          aDate >= range.start && aDate <= range.end
-        );
-      });
-
-      // Calculate short leaves per month
-      const shortLeavesPerMonth: Record<string, number> = {};
-      uncoveredAttendanceLeaves.forEach(a => {
-        if (a.status === 'SHORT_LEAVE') {
-          const aDate = new Date(a.date);
-          const monthKey = `${aDate.getFullYear()}-${(aDate.getMonth() + 1).toString().padStart(2, '0')}`;
-          shortLeavesPerMonth[monthKey] = (shortLeavesPerMonth[monthKey] || 0) + 1;
-        }
-      });
-
-      // Calculate casual days from uncovered leaves
-      let casualFromAttendance = 0;
-      uncoveredAttendanceLeaves.forEach(a => {
-        if (a.status === 'HALF_DAY') casualFromAttendance += 0.5;
-        if (a.status === 'LEAVE') casualFromAttendance += 1;
-      });
-
-      // Total casual used = approved casual + half days + short leave conversions + uncovered LEAVE
-      const totalCasualUsed = approvedDays + casualFromAttendance + Math.floor(Object.values(shortLeavesPerMonth).reduce((sum, count) => sum + count, 0) / 2);
-
-      // Total casual available = 21 (default) - total used
-      const casualAvailable = 21 - totalCasualUsed;
-
-      // Determine how many days this new leave would consume
-      let newLeaveDays = 0;
-      if (type === 'CASUAL' || type === 'VACATION') {
-        const s = new Date(start_date);
-        const e = new Date(end_date);
-        newLeaveDays = Math.floor((e.getTime() - s.getTime()) / (1000 * 60 * 60 * 24)) + 1;
-      } else if (type === 'SICK') {
-        // Sick leave doesn't deduct from casual, but validate separately if needed
-        newLeaveDays = 1; // placeholder - sick has separate balance
-      } else if (type === 'SHORT_LEAVE') {
-        // 2 short leaves = 1 casual day (deducted during balance calculation)
-        newLeaveDays = 0; // handled in balance calc
-      } else if (type === 'HALF_DAY') {
-        newLeaveDays = 0.5;
+      const VALID_TYPES = ['CASUAL', 'SICK', 'VACATION', 'DUTY', 'SHORT_LEAVE', 'HALF_DAY'];
+      if (!VALID_TYPES.includes(type)) {
+        return res.status(400).json({ status: 'error', message: `Invalid leave type. Expected one of: ${VALID_TYPES.join(', ')}` });
+      }
+      if (!start_date || !end_date) {
+        return res.status(400).json({ status: 'error', message: 'start_date and end_date are required' });
       }
 
-      // Check if officer has sufficient casual leave balance
-      const balances = { casual: totalCasualUsed, casual_total: 21, sick: 0, sick_total: 7, vacation: 0, vacation_total: 21, short_leave_count: 0, half_day_count: 0 };
-      if (type === 'CASUAL' && (balances.casual + newLeaveDays) > (balances.casual_total || 21)) {
-        return res.status(400).json({ status: 'error', message: `Insufficient casual leave balance. Available: ${balances.casual_total - balances.casual} days, Required: ${newLeaveDays} days.` });
+      // Reject a reversed range outright rather than letting it through as a
+      // negative day count that cancels out genuine leave.
+      const requestedDates = eachDateKey(start_date, end_date);
+      if (requestedDates.length === 0) {
+        return res.status(400).json({ status: 'error', message: 'end_date must be the same as or after start_date' });
       }
 
-      // Check if officer has sufficient sick leave balance
-      if (type === 'SICK' && (balances.sick + (newLeaveDays || 1)) > (balances.sick_total || 7)) {
-        return res.status(400).json({ status: 'error', message: `Insufficient sick leave balance. Available: ${balances.sick_total - balances.sick} days.` });
+      // Same arithmetic the balance endpoint reports, so the two never disagree.
+      const balances = await computeLeaveBalances(req.user.id);
+      const cost = leaveRequestCost(type, start_date, end_date);
+
+      const bucket: Record<string, { used: number; total: number; label: string }> = {
+        CASUAL: { used: balances.casual, total: balances.casual_total, label: 'casual' },
+        SICK: { used: balances.sick, total: balances.sick_total, label: 'sick' },
+        VACATION: { used: balances.vacation, total: balances.vacation_total, label: 'vacation' },
+        // A half day is charged against casual leave.
+        HALF_DAY: { used: balances.casual, total: balances.casual_total, label: 'casual' },
+      };
+
+      const applicable = bucket[type];
+      if (applicable && cost > 0 && applicable.used + cost > applicable.total) {
+        const remaining = Math.max(0, applicable.total - applicable.used);
+        return res.status(400).json({
+          status: 'error',
+          message: `Insufficient ${applicable.label} leave balance. Available: ${remaining} day(s), requested: ${cost} day(s).`,
+        });
       }
 
-      // Check if officer has sufficient vacation balance
-      if (type === 'VACATION' && (balances.vacation + newLeaveDays) > (balances.vacation_total || 21)) {
-        return res.status(400).json({ status: 'error', message: `Insufficient vacation leave balance. Available: ${balances.vacation_total - balances.vacation} days.` });
-      }
-
-      // P0: Check for overlapping approved leaves
+      // Overlap against existing approved leave. The three clauses cover a new
+      // range that starts inside, ends inside, or fully encloses an approved one.
       const overlap = await db('leaves')
         .where('officer_id', req.user.id)
         .where('status', 'APPROVED')
-        .where(function() {
+        .where(function () {
           this.whereBetween('start_date', [start_date, end_date])
-             .orWhere('end_date', [start_date, end_date])
-             .orWhere('start_date', '<=', start_date).where('end_date', '>=', end_date);
-        });
+            .orWhereBetween('end_date', [start_date, end_date])
+            .orWhere(function () {
+              this.where('start_date', '<=', start_date).andWhere('end_date', '>=', end_date);
+            });
+        })
+        .first();
 
-      if (overlap.length > 0) {
+      if (overlap) {
         return res.status(400).json({ status: 'error', message: 'This leave period overlaps with an existing approved leave.' });
       }
 
-      // Apply for leave
+      // Explicit field list: req.body used to be spread straight into the insert,
+      // so any column name a caller invented was written through.
       const [id] = await db('leaves').insert({
-        ...req.body,
         officer_id: req.user.id,
-        status: 'PENDING'
+        type,
+        sub_type: sub_type || null,
+        start_date,
+        end_date,
+        reason: reason || null,
+        status: 'PENDING',
       });
       const leave = await db('leaves').where('id', id).first();
       res.json({ status: 'success', data: leave });
     } catch (error: any) {
+      console.error('[Leaves] Application failed:', error.message);
       res.status(500).json({ status: 'error', message: error.message });
     }
   });
+
   apiRouter.get('/admin/leaves/pending', authenticate, async (req, res) => {
     try {
       const leaves = await db('leaves')

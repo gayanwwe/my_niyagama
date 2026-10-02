@@ -7,7 +7,8 @@ import { Icons } from './constants.tsx';
 import { api } from './service/api.ts';
 import { translations, TranslationKey } from './service/i18n.ts';
 import ErrorBoundary from './components/ErrorBoundary.tsx';
-import MainTabs from '@/components/MainTabs';
+import MainTabs from './components/MainTabs';
+import { Toaster } from 'react-hot-toast';
 
 import DashboardOfficer from './pages/DashboardOfficer';
 import DashboardExecutive from './pages/DashboardExecutive';
@@ -241,6 +242,17 @@ const AppContent: React.FC = () => {
 const App: React.FC = () => (
   <HashRouter>
     <AppContent />
+    {/* Required for react-hot-toast to render anything. Without it every
+        toast.success / toast.error call in the app is silently discarded. */}
+    <Toaster
+      position="top-center"
+      toastOptions={{
+        duration: 4000,
+        style: { borderRadius: '1rem', fontWeight: 700, fontSize: '0.8rem' },
+        success: { iconTheme: { primary: '#10b981', secondary: '#fff' } },
+        error: { duration: 6000, iconTheme: { primary: '#ef4444', secondary: '#fff' } },
+      }}
+    />
   </HashRouter>
 );
 
