@@ -145,15 +145,26 @@ export function calculateAttendanceStatus(
   const inMins = timeToMins(arrivalTime);
   const outMins = timeToMins(departureTime);
 
+  const hasDeparture = !!departureTime && departureTime !== arrivalTime;
+
   // If on the current day, calculate as PRESENT if no out-time logs exist yet
   // Out-time is considered not available if it's blank/undefined or equals arrivalTime
   if (date) {
     const todayStr = new Date().toLocaleDateString('en-CA');
     if (date === todayStr) {
-      if (!departureTime || departureTime === arrivalTime) {
+      if (!hasDeparture) {
         return { status: 'PRESENT' };
       }
     }
+  }
+
+  // A past day with an arrival but no departure scan. The officer almost
+  // certainly worked; the device simply missed the second scan. Treating this
+  // as a HALF_DAY silently deducted half a day of casual leave for the most
+  // common hardware fault there is, so it is flagged for a human to resolve
+  // (via POST /attendance/manual) and deducts nothing in the meantime.
+  if (!hasDeparture) {
+    return { status: 'MISSING_PUNCH' };
   }
 
   // Rule 06: If officer off before 11:00, assume "OFF TO FIELD"

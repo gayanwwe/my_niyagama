@@ -342,6 +342,7 @@ const BiometricManagement: React.FC<Props> = ({ user, lang }) => {
       case 'SHORT_LEAVE': return 'bg-orange-500';
       case 'HOLIDAY': return 'bg-yellow-400';
       case 'NON_WORKING': return 'bg-slate-200';  // weekend: not an absence
+      case 'MISSING_PUNCH': return 'bg-amber-400';  // needs a human to resolve
       case 'LATE': return 'bg-amber-500';
       case 'LEAVE': return 'bg-red-500';
       default: return 'bg-slate-100';
@@ -588,6 +589,7 @@ const BiometricManagement: React.FC<Props> = ({ user, lang }) => {
                           log.registry_status === 'HALF_DAY' ? 'bg-purple-100 text-purple-600' :
                           log.registry_status === 'LEAVE' ? 'bg-red-100 text-red-600' : 
                           log.registry_status === 'HOLIDAY' ? 'bg-indigo-100 text-indigo-600' :
+                          log.registry_status === 'MISSING_PUNCH' ? 'bg-amber-100 text-amber-700' :
                           'bg-slate-100 text-slate-400'
                         }`}>
                           {log.registry_status || 'NOT-SET'}
@@ -856,7 +858,7 @@ const BiometricManagement: React.FC<Props> = ({ user, lang }) => {
                <div className="space-y-1.5">
                   <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Manual Status Update</label>
                   <div className="grid grid-cols-3 gap-2">
-                    {['PRESENT', 'LEAVE', 'DUTY LEAVE', 'FIELD', 'SHORT_LEAVE', 'HALF_DAY', 'ABSENT'].map(st => (
+                    {['PRESENT', 'LEAVE', 'DUTY LEAVE', 'FIELD', 'SHORT_LEAVE', 'HALF_DAY', 'ABSENT', 'MISSING_PUNCH'].map(st => (
                       <button 
                         key={st}
                         onClick={() => setManualForm({...manualForm, status: st})}

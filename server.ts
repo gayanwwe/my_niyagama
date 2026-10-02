@@ -226,6 +226,12 @@ async function startServer() {
   // Sunday = 0 ... Saturday = 6. Sri Lankan divisional secretariats work
   // Monday to Friday; override with the `non_working_weekdays` setting (a
   // comma-separated list, or an empty string to treat every day as working).
+  // Who may change the public holiday calendar. A holiday reduces the leave
+  // deducted from every officer, so this is deliberately narrower than the
+  // general approver set. SA is included as the system-administrator superset
+  // (the seeded administrator account holds SA, not ADMIN).
+  const HOLIDAY_MANAGER_ROLES = ['LEAVE_OFFICER', 'ADMIN', 'SA'];
+
   const DEFAULT_NON_WORKING_WEEKDAYS = [0, 6];
 
   /**
@@ -251,6 +257,21 @@ async function startServer() {
     'official_phone', 'profile_pic', 'address', 'bio', 'birthday', 'join_date',
     'dashboard_status', 'eta',
   ];
+
+  /**
+   * Copies only the named fields out of a request body. Spreading req.body
+   * straight into an insert lets a caller write any column the table happens to
+   * have, and any column it does not have takes the whole request down with a
+   * raw SQL error.
+   */
+  const pickFields = (body: any, fields: string[]) => {
+    const out: any = {};
+    if (!body || typeof body !== 'object') return out;
+    for (const key of fields) {
+      if (body[key] !== undefined) out[key] = body[key];
+    }
+    return out;
+  };
 
   const pickOfficerFields = (body: any) => {
     const out: any = {};
@@ -2933,16 +2954,27 @@ async function startServer() {
     }
   });
 
-  apiRouter.post('/settings/holidays', authenticate, async (req, res) => {
+  apiRouter.post('/settings/holidays', authenticate, requireRole(...HOLIDAY_MANAGER_ROLES), async (req, res) => {
     try {
-      const { date, name } = req.body;
-      const [id] = await db('holidays').insert({ date, name });
-      
-      // Task 4: Automatically update all attendance calculations for this date
-      // If any officer was marked as SHORT_LEAVE or HALF_DAY or something, 
-      // maybe we should keep it? But usually holidays override absence.
-      // We can also trigger a re-sync if needed.
-      
+      const { date, name } = req.body || {};
+
+      // A holiday reduces the leave deducted from every officer, so a malformed
+      // or duplicated date here quietly affects the whole division's balances.
+      if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(String(date))) {
+        return res.status(400).json({ status: 'error', message: 'date is required, as YYYY-MM-DD' });
+      }
+      if (!name || !String(name).trim()) {
+        return res.status(400).json({ status: 'error', message: 'name is required' });
+      }
+
+      const existing = await db('holidays').where('date', date).first();
+      if (existing) {
+        return res.status(409).json({ status: 'error', message: `${date} is already a holiday (${existing.name})` });
+      }
+
+      const [id] = await db('holidays').insert({ date, name: String(name).trim() });
+      console.log(`[Holidays] ${(req as any).user?.username} added ${date} (${name})`);
+
       const holiday = await db('holidays').where('id', id).first();
       res.json({ status: 'success', data: holiday });
     } catch (error: any) {
@@ -2989,7 +3021,7 @@ async function startServer() {
     }
   });
 
-  apiRouter.delete('/settings/holidays/:id', authenticate, async (req, res) => {
+  apiRouter.delete('/settings/holidays/:id', authenticate, requireRole(...HOLIDAY_MANAGER_ROLES), async (req, res) => {
     try {
       await db('holidays').where('id', req.params.id).del();
       res.json({ status: 'success', data: {} });
@@ -3648,9 +3680,9 @@ async function startServer() {
   apiRouter.post('/journal', authenticate, async (req: any, res) => {
     try {
       const [id] = await db('journal_entries').insert({
-        ...req.body,
+        ...pickFields(req.body, ['title', 'category', 'content']),
         officer_id: req.user.id,
-        date: req.body.date || new Date().toLocaleDateString('en-CA')
+        date: req.body?.date || new Date().toLocaleDateString('en-CA')
       });
       const entry = await db('journal_entries').where('id', id).first();
       res.json({ status: 'success', data: entry });
@@ -3686,7 +3718,10 @@ async function startServer() {
   });
   apiRouter.post('/circles/:id/projects', authenticate, async (req, res) => {
     try {
-      const [id] = await db('projects').insert({ ...req.body, circle_id: req.params.id });
+      const [id] = await db('projects').insert({
+        ...pickFields(req.body, ['title', 'description', 'goal', 'mission', 'vision', 'status']),
+        circle_id: req.params.id,
+      });
       const project = await db('projects').where('id', id).first();
       res.json({ status: 'success', data: project });
     } catch (error: any) {
@@ -3703,7 +3738,10 @@ async function startServer() {
   });
   apiRouter.post('/projects/:id/tasks', authenticate, async (req, res) => {
     try {
-      const [id] = await db('tasks').insert({ ...req.body, project_id: req.params.id });
+      const [id] = await db('tasks').insert({
+        ...pickFields(req.body, ['title', 'description', 'due_date', 'priority', 'status', 'assigned_officer_id']),
+        project_id: req.params.id,
+      });
       const task = await db('tasks').where('id', id).first();
       res.json({ status: 'success', data: task });
     } catch (error: any) {
@@ -3712,8 +3750,18 @@ async function startServer() {
   });
   apiRouter.post('/tasks/:id/updates', authenticate, async (req: any, res) => {
     try {
+      // The client posts `content`; the column is `comment`. Previously the
+      // whole body was spread into the insert, so every task update failed with
+      // "no such column: content". Accept either name.
+      const { comment, content, progress } = req.body || {};
+      const text = comment ?? content;
+      if (!text || !String(text).trim()) {
+        return res.status(400).json({ status: 'error', message: 'An update comment is required' });
+      }
+
       const [id] = await db('task_updates').insert({
-        ...req.body,
+        comment: String(text),
+        ...(progress !== undefined ? { progress } : {}),
         task_id: req.params.id,
         officer_id: req.user.id
       });
@@ -4414,7 +4462,7 @@ async function startServer() {
   });
   apiRouter.post('/dashboard/events', authenticate, async (req, res) => {
     try {
-      const data = { ...req.body };
+      const data = pickFields(req.body, ['title', 'event_date', 'event_time', 'location', 'image_url', 'is_active']);
       // Convert empty strings to null for optional fields
       if (data.event_date === '') data.event_date = null;
       if (data.event_time === '') data.event_time = null;
@@ -4430,7 +4478,7 @@ async function startServer() {
   });
   apiRouter.put('/dashboard/events/:id', authenticate, async (req, res) => {
     try {
-      const data = { ...req.body };
+      const data = pickFields(req.body, ['title', 'event_date', 'event_time', 'location', 'image_url', 'is_active']);
       // Convert empty strings to null for optional fields
       if (data.event_date === '') data.event_date = null;
       if (data.event_time === '') data.event_time = null;
