@@ -4,11 +4,11 @@ import { motion, AnimatePresence } from 'motion/react';
 import { UserRole } from './types.ts';
 import type { Officer } from './types.ts';
 import { Icons } from './constants.tsx';
-import { api } from './service/api.ts';
+import { api, UNAUTHENTICATED_EVENT } from './service/api.ts';
 import { translations, TranslationKey } from './service/i18n.ts';
 import ErrorBoundary from './components/ErrorBoundary.tsx';
 import MainTabs from './components/MainTabs';
-import { Toaster } from 'react-hot-toast';
+import { Toaster, toast } from 'react-hot-toast';
 
 import DashboardOfficer from './pages/DashboardOfficer';
 import DashboardExecutive from './pages/DashboardExecutive';
@@ -173,6 +173,36 @@ const AppContent: React.FC = () => {
     setUser(null);
     setToken(null);
   };
+
+  // The API client clears the stored session when the server rejects a token.
+  // React state has to be reset too, otherwise `token` still holds the expired
+  // value, the guard below stays false, and the app keeps rendering the
+  // signed-in shell over an empty dashboard instead of the login form.
+  useEffect(() => {
+    const handleUnauthenticated = () => {
+      setUser(null);
+      setToken(null);
+      // Deduplicated by id: a screen that fires several requests at once would
+      // otherwise stack one toast per failed request.
+      toast.error('Your session has expired. Please sign in again.', { id: 'session-expired' });
+    };
+
+    // Also covers signing out in another tab: localStorage is shared, so this
+    // tab would otherwise keep showing a signed-in shell with no token.
+    const handleStorage = (e: StorageEvent) => {
+      if (e.key === 'niyagama_token' && e.newValue === null) {
+        setUser(null);
+        setToken(null);
+      }
+    };
+
+    window.addEventListener(UNAUTHENTICATED_EVENT, handleUnauthenticated);
+    window.addEventListener('storage', handleStorage);
+    return () => {
+      window.removeEventListener(UNAUTHENTICATED_EVENT, handleUnauthenticated);
+      window.removeEventListener('storage', handleStorage);
+    };
+  }, []);
 
   if (location.pathname === '/public-dashboard') {
     return <PublicDashboard />;

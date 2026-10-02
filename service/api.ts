@@ -11,6 +11,26 @@ const getBaseUrl = () => {
 const BASE_URL = getBaseUrl();
 const OFFLINE_QUEUE_KEY = 'niyagama_offline_attendance_queue';
 
+/** Fired when the server rejects a token we actually sent, so the app can reset
+ *  its auth state. App.tsx listens for this. */
+export const UNAUTHENTICATED_EVENT = 'niyagama:unauthenticated';
+
+/**
+ * Clears the stored session and tells the app about it.
+ *
+ * Previously this cleared localStorage and then navigated to '#/login', a route
+ * that does not exist: the catch-all bounced it back to '/', React's auth state
+ * still held the old token, so the app stayed in the signed-in shell rendering
+ * an empty dashboard instead of the login form.
+ */
+const clearSessionAndNotify = () => {
+  localStorage.removeItem('niyagama_token');
+  localStorage.removeItem('niyagama_user');
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(UNAUTHENTICATED_EVENT));
+  }
+};
+
 export class ApiClient {
   private isSyncing = false;
   private _isOnline = navigator.onLine;
@@ -42,8 +62,7 @@ export class ApiClient {
         }
       });
       if (response.status === 401) {
-        localStorage.removeItem('niyagama_token');
-        localStorage.removeItem('niyagama_user');
+        clearSessionAndNotify();
       }
     } catch (e) {
       this._isOnline = false;
@@ -80,12 +99,21 @@ export class ApiClient {
       }
 
       if (response.status === 401) {
-        localStorage.removeItem('niyagama_token');
-        localStorage.removeItem('niyagama_user');
-        if (typeof window !== 'undefined' && !window.location.hash.includes('login')) {
-            window.location.href = '#/login';
+        // Only treat this as an expired session if we actually sent a token.
+        // A failed sign-in also returns 401, and that must not be reported to
+        // the user as "your session expired".
+        if (token) {
+          clearSessionAndNotify();
+          throw new Error('Your session has expired. Please sign in again.');
         }
-        throw new Error('Unauthenticated.');
+        // No token was sent, so this is a sign-in attempt rather than an expiry.
+        // Surface what the server actually said (e.g. "Invalid credentials")
+        // instead of a generic string.
+        let serverMessage = '';
+        if (isJson) {
+          try { serverMessage = JSON.parse(text)?.message || ''; } catch { /* keep the fallback */ }
+        }
+        throw new Error(serverMessage || 'Authentication failed.');
       }
 
       if (!isJson) {
