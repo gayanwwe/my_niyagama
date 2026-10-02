@@ -218,6 +218,11 @@ async function startServer() {
   // Roles permitted to administer staff records and system configuration.
   const ADMIN_ROLES = ['SA', 'ADMIN', 'IT'];
 
+  // Roles permitted to action someone else's leave or resource request. Mirrors
+  // the `isManagement` set the frontend uses to show the approvals screen; the
+  // server is the enforcement point, since the client check is only a UI hint.
+  const APPROVER_ROLES = ['SA', 'ADMIN', 'EXECUTIVE', 'EX', 'CHIEF_CLERK', 'LEAVE_OFFICER', 'IT'];
+
   // Columns on `officers` that an administrator may set through the staff API.
   // `pin`, `username` and `biometric_id` are handled separately (hashing and
   // uniqueness checks); `id` and timestamps are never writable.
@@ -3018,7 +3023,7 @@ async function startServer() {
     }
   });
 
-  apiRouter.get('/admin/leaves/pending', authenticate, async (req, res) => {
+  apiRouter.get('/admin/leaves/pending', authenticate, requireRole(...APPROVER_ROLES), async (req, res) => {
     try {
       const leaves = await db('leaves')
         .join('officers', 'leaves.officer_id', 'officers.id')
@@ -3029,12 +3034,48 @@ async function startServer() {
       res.status(500).json({ status: 'error', message: error.message });
     }
   });
-  apiRouter.put('/leaves/:id/status', authenticate, async (req, res) => {
+  const LEAVE_DECISIONS = ['APPROVED', 'REJECTED', 'PENDING'];
+
+  apiRouter.put('/leaves/:id/status', authenticate, requireRole(...APPROVER_ROLES), async (req: any, res) => {
     try {
-      const { status } = req.body;
-      await db('leaves').where('id', req.params.id).update({ status });
-      res.json({ status: 'success', data: {} });
+      const { status } = req.body || {};
+
+      // The column is a plain VARCHAR, so without this check any string lands in
+      // it. A leave left in an unrecognised state is invisible to both the
+      // balance calculation and the pending queue, which filter on exact values.
+      if (!LEAVE_DECISIONS.includes(status)) {
+        return res.status(400).json({
+          status: 'error',
+          message: `Invalid status. Expected one of: ${LEAVE_DECISIONS.join(', ')}`,
+        });
+      }
+
+      const leave = await db('leaves').where('id', req.params.id).first();
+      if (!leave) {
+        return res.status(404).json({ status: 'error', message: 'Leave request not found' });
+      }
+
+      // An approver may not action their own request, regardless of role.
+      if (String(leave.officer_id) === String(req.user.id)) {
+        return res.status(403).json({
+          status: 'error',
+          message: 'You cannot action your own leave request. Another approver must review it.',
+        });
+      }
+
+      await db('leaves').where('id', req.params.id).update({ status, updated_at: db.fn.now() });
+
+      await logActivity(
+        leave.officer_id,
+        'LEAVE_DECISION',
+        `Leave ${status.toLowerCase()}`,
+        `Your ${leave.type} leave for ${toDateKey(leave.start_date)} to ${toDateKey(leave.end_date)} was ${status.toLowerCase()}.`,
+      );
+      console.log(`[Leaves] ${req.user.username} (${req.user.role}) set leave ${req.params.id} to ${status} for officer ${leave.officer_id}`);
+
+      res.json({ status: 'success', data: { id: Number(req.params.id), status } });
     } catch (error: any) {
+      console.error('[Leaves] Status update failed:', error.message);
       res.status(500).json({ status: 'error', message: error.message });
     }
   });
@@ -3170,7 +3211,7 @@ async function startServer() {
       res.status(500).json({ status: 'error', message: error.message });
     }
   });
-  apiRouter.get('/admin/resources/pending', authenticate, async (req, res) => {
+  apiRouter.get('/admin/resources/pending', authenticate, requireRole(...APPROVER_ROLES), async (req, res) => {
     try {
       const bookings = await db('resource_bookings')
         .join('resources', 'resource_bookings.resource_id', 'resources.id')
@@ -3182,12 +3223,36 @@ async function startServer() {
       res.status(500).json({ status: 'error', message: error.message });
     }
   });
-  apiRouter.put('/resources/bookings/:id/status', authenticate, async (req, res) => {
+  const BOOKING_DECISIONS = ['APPROVED', 'REJECTED', 'PENDING'];
+
+  apiRouter.put('/resources/bookings/:id/status', authenticate, requireRole(...APPROVER_ROLES), async (req: any, res) => {
     try {
-      const { status } = req.body;
-      await db('resource_bookings').where('id', req.params.id).update({ status });
-      res.json({ status: 'success', data: {} });
+      const { status } = req.body || {};
+      if (!BOOKING_DECISIONS.includes(status)) {
+        return res.status(400).json({
+          status: 'error',
+          message: `Invalid status. Expected one of: ${BOOKING_DECISIONS.join(', ')}`,
+        });
+      }
+
+      const booking = await db('resource_bookings').where('id', req.params.id).first();
+      if (!booking) {
+        return res.status(404).json({ status: 'error', message: 'Booking not found' });
+      }
+
+      if (String(booking.officer_id) === String(req.user.id)) {
+        return res.status(403).json({
+          status: 'error',
+          message: 'You cannot action your own booking. Another approver must review it.',
+        });
+      }
+
+      await db('resource_bookings').where('id', req.params.id).update({ status, updated_at: db.fn.now() });
+      console.log(`[Resources] ${req.user.username} (${req.user.role}) set booking ${req.params.id} to ${status}`);
+
+      res.json({ status: 'success', data: { id: Number(req.params.id), status } });
     } catch (error: any) {
+      console.error('[Resources] Booking status update failed:', error.message);
       res.status(500).json({ status: 'error', message: error.message });
     }
   });
