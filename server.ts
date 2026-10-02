@@ -3165,16 +3165,48 @@ async function startServer() {
   });
   apiRouter.post('/resources/bookings', authenticate, async (req: any, res) => {
     try {
+      // Explicit field list. req.body used to be spread straight into the insert,
+      // which let a caller set `status` and create a booking that was already
+      // APPROVED - bypassing the approval route entirely - and let any invented
+      // column through to fail the insert.
+      const { resource_id, start_time, end_time, purpose, destination } = req.body || {};
+
+      if (!resource_id || !start_time || !end_time) {
+        return res.status(400).json({
+          status: 'error',
+          message: 'resource_id, start_time and end_time are required',
+        });
+      }
+
+      const startMs = new Date(start_time).getTime();
+      const endMs = new Date(end_time).getTime();
+      if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) {
+        return res.status(400).json({ status: 'error', message: 'start_time and end_time must be valid dates' });
+      }
+      if (endMs <= startMs) {
+        return res.status(400).json({ status: 'error', message: 'end_time must be after start_time' });
+      }
+
+      const resource = await db('resources').where('id', resource_id).first();
+      if (!resource) {
+        return res.status(404).json({ status: 'error', message: 'Resource not found' });
+      }
+
       const [id] = await db('resource_bookings').insert({
-        ...req.body,
-        officer_id: req.user.id
+        resource_id,
+        start_time,
+        end_time,
+        purpose: purpose || null,
+        destination: destination || null,
+        officer_id: req.user.id,
+        // Always starts PENDING. Only the approval route may change this.
+        status: 'PENDING',
       });
       const booking = await db('resource_bookings').where('id', id).first();
 
       // Retrieve additional info for notifications
       try {
-        const resourceObj = await db('resources').where('id', req.body.resource_id).first();
-        const resourceName = resourceObj ? resourceObj.name : `Resource #${req.body.resource_id}`;
+        const resourceName = resource.name || `Resource #${resource_id}`;
         const officerObj = await db('officers').where('id', req.user.id).first();
         const officerName = officerObj ? officerObj.name : `Officer #${req.user.id}`;
 
@@ -3197,7 +3229,7 @@ async function startServer() {
           await db('notifications').insert({
             officer_id: apprv.id,
             title: 'New Resource request',
-            message: `${officerName} has requested a booking for ${resourceName} starting on ${new Date(req.body.start_time).toLocaleString()}.`,
+            message: `${officerName} has requested a booking for ${resourceName} starting on ${new Date(start_time).toLocaleString()}.`,
             is_read: false,
             type: 'APPROVAL'
           });
