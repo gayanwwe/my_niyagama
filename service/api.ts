@@ -284,7 +284,22 @@ export class ApiClient {
 
   // Dashboard Module
   async getIntelligenceSnapshot(date?: string) { return this.request<any>(`/intelligence/snapshot${date ? `?date=${date}` : ''}`); }
-  async getPublicDashboardData() { return this.request<any>('/public-dashboard/data'); }
+  /**
+   * The lobby display is not a signed-in user. request() attaches whatever
+   * token happens to be in localStorage, so the screen silently inherited the
+   * privileges of whoever last logged in on that machine. This reads the public
+   * payload with no credentials at all.
+   */
+  async getPublicDashboardData() {
+    const response = await fetch(`${BASE_URL}/public-dashboard/data`, {
+      headers: { 'Accept': 'application/json' },
+    });
+    if (!response.ok) {
+      throw new Error(`Public dashboard unavailable (HTTP ${response.status})`);
+    }
+    const result = await response.json();
+    return result.data !== undefined ? result.data : result;
+  }
   async updateOfficerStatus(status: string, eta?: string) { return this.request<any>('/dashboard/status', { method: 'POST', body: JSON.stringify({ status, eta }) }); }
   
   async getDashboardNotices() { return this.request<any[]>('/dashboard/notices'); }

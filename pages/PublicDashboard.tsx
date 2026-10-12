@@ -482,64 +482,11 @@ const PublicDashboard = () => {
     return () => clearInterval(interval);
   }, [data?.settings?.refresh_interval, loading]);
 
-  // Handle automatic status transitions when timers expire
-  useEffect(() => {
-    if (!data?.slots || loading) return;
-
-    data.slots.forEach(async (slot: any) => {
-      if (!slot.eta) return;
-
-      // Parse ETA
-      const timeStr = slot.eta.toUpperCase().replace('.', ':');
-      const timeMatch = timeStr.match(/(\d{1,2}):(\d{2})\s*(AM|PM)?/);
-      const relativeMatch = timeStr.match(/(\d+)\s*(MIN|M|MINUTES)/);
-      
-      let targetDate: Date | null = null;
-      if (timeMatch) {
-         const [_, hoursStr, minutesStr, ampm] = timeMatch;
-         let hours = parseInt(hoursStr);
-         const minutes = parseInt(minutesStr);
-         if (ampm === 'PM' && hours < 12) hours += 12;
-         if (ampm === 'AM' && hours === 12) hours = 0;
-         targetDate = new Date();
-         targetDate.setHours(hours, minutes, 0, 0);
-      } else if (relativeMatch && slot.updated_at) {
-         const mins = parseInt(relativeMatch[1]);
-         targetDate = new Date(new Date(slot.updated_at).getTime() + mins * 60000);
-      }
-
-      if (targetDate && currentTime.getTime() >= targetDate.getTime()) {
-        const upperEta = slot.eta.toUpperCase();
-        const isBackIn = upperEta.includes('BACK IN') || upperEta.includes('IN AT') || /^\d+/.test(upperEta);
-        const isOffIn = upperEta.includes('OFF IN') || upperEta.includes('OUT AT');
-        const isCurrentlyAvailable = slot.status === 'AVAILABLE' || slot.status === 'IN';
-
-        // Auto transition logic
-        if ((isBackIn && !isCurrentlyAvailable) || (isOffIn && isCurrentlyAvailable)) {
-          try {
-            const nextStatus = isBackIn ? 'AVAILABLE' : 'OFFLINE';
-            console.log(`Auto-transitioning slot ${slot.slot_id} to ${nextStatus}`);
-            // Use updateDashboardSlot for slot-based updates
-            await api.updateDashboardSlot(slot.slot_id, { status: nextStatus, eta: '' });
-            // Fetch fresh data after transition to update UI across all clients
-            const result = await api.getPublicDashboardData();
-            setData(result);
-          } catch (err) {
-            console.error("Auto transition failed:", err);
-          }
-        } else if (slot.eta) {
-          // If the countdown is over but we don't need a status change, just clear the ETA
-          try {
-            await api.updateDashboardSlot(slot.slot_id, { eta: '' });
-            const result = await api.getPublicDashboardData();
-            setData(result);
-          } catch (err) {
-             console.error("ETA clear failed:", err);
-          }
-        }
-      }
-    });
-  }, [currentTime, data?.slots, loading]);
+  // Expired slot ETAs are applied by the server's presence sweep. This used to
+  // run here on a one-second tick, calling an authenticated endpoint from a
+  // screen that has no credentials: every call returned 401, the ETA was never
+  // cleared, so the condition stayed true and it retried indefinitely while the
+  // displayed status never changed.
 
   const ADMIN_ROLES = [
     { id: 'ds', code: 'DS', sinhala: 'ප්‍රාදේශීය ලේකම්', english: 'Divisional Secretary', tamil: 'கோட்டச் செயலாளர்' },

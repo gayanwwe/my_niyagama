@@ -101,6 +101,11 @@ const PublicDashboardControl: React.FC<PublicDashboardControlProps> = ({ user, l
   const isSocketIntentionalCloseRef = React.useRef<boolean>(false);
   const frameCaptureIntervalRef = React.useRef<any>(null);
 
+  // The broadcast surface is no longer open: pushing frames, registering as the
+  // host and speaking as the broadcaster all require a display operator token.
+  const authToken = () => localStorage.getItem('niyagama_token') || '';
+  const authHeaders = () => ({ 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken()}` });
+
   const addStudioLog = (message: string) => {
     setStudioLogs(prev => [
       `[${new Date().toLocaleTimeString()}] ${message}`,
@@ -353,7 +358,7 @@ const PublicDashboardControl: React.FC<PublicDashboardControlProps> = ({ user, l
         try {
           await fetch('/api/live-signaling/send', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: authHeaders(),
             body: JSON.stringify(payload)
           });
         } catch (e) {
@@ -456,7 +461,7 @@ const PublicDashboardControl: React.FC<PublicDashboardControlProps> = ({ user, l
       try {
         await fetch('/api/live-signaling/register', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: authHeaders(),
           body: JSON.stringify({ role: 'broadcaster', id: 'broadcaster' })
         });
       } catch(e) {
@@ -482,7 +487,7 @@ const PublicDashboardControl: React.FC<PublicDashboardControlProps> = ({ user, l
       if (isSocketIntentionalCloseRef.current || fallbackToPolling) return;
 
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const socketUrl = `${protocol}//${window.location.host}/api/live-stream?role=broadcaster`;
+      const socketUrl = `${protocol}//${window.location.host}/api/live-stream?role=broadcaster&token=${encodeURIComponent(authToken())}`;
       
       ws = new WebSocket(socketUrl);
       broadcasterSocketRef.current = ws;
@@ -579,7 +584,7 @@ const PublicDashboardControl: React.FC<PublicDashboardControlProps> = ({ user, l
             const frameBase64 = canvas.toDataURL('image/jpeg', 0.55);
             fetch('/api/live-stream/frame', {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: authHeaders(),
               body: JSON.stringify({ frame: frameBase64 })
             }).catch(() => {});
             setBytesSent(prev => prev + frameBase64.length);
@@ -599,7 +604,7 @@ const PublicDashboardControl: React.FC<PublicDashboardControlProps> = ({ user, l
       try {
         fetch('/api/live-signaling/send', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: authHeaders(),
           body: JSON.stringify({ sender: 'broadcaster', target: vId, type: 'ended' })
         }).catch(() => {});
         pc.close();

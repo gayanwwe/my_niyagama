@@ -218,6 +218,12 @@ async function startServer() {
   // (the seeded administrator account holds SA, not ADMIN).
   const HOLIDAY_MANAGER_ROLES = ['LEAVE_OFFICER', 'ADMIN', 'SA'];
 
+  // Who may publish to the screen in the public lobby. The control page was
+  // only ever hidden from other roles in the UI; every write behind it was
+  // gated on "any valid token", so any officer could post an emergency alert
+  // to a public government display or mark the Divisional Secretary as out.
+  const DISPLAY_MANAGER_ROLES = ['SA', 'ADMIN', 'IT', 'OPERATOR'];
+
   const DEFAULT_NON_WORKING_WEEKDAYS = [0, 6];
 
   /**
@@ -3863,6 +3869,55 @@ async function startServer() {
    * on every poll. It now runs on a timer inside the server process, and the
    * public endpoint only reads.
    */
+  /**
+   * Applies expired slot ETAs.
+   *
+   * This ran in the browser, on the public display, on a one-second tick - and
+   * the display has no credentials, so every attempt returned 401, the ETA was
+   * never cleared, the condition stayed true and it retried forever. Measured
+   * on a signed-out screen: 13 failed writes in 21 seconds, per expired slot,
+   * with the status never updating. It also meant transitions only happened
+   * while somebody had the screen open.
+   */
+  const applyExpiredSlotEtas = async () => {
+    const slots = await db('dashboard_status').whereNotNull('eta').whereNot('eta', '');
+    const now = Date.now();
+
+    for (const slot of slots) {
+      const raw = String(slot.eta || '').toUpperCase().replace('.', ':');
+      let deadline: number | null = null;
+
+      const absolute = raw.match(/(\d{1,2}):(\d{2})\s*(AM|PM)?/);
+      const relative = raw.match(/(\d+)\s*(MIN|M|MINUTES)/);
+
+      if (absolute) {
+        let hours = parseInt(absolute[1], 10);
+        const minutes = parseInt(absolute[2], 10);
+        const meridiem = absolute[3];
+        if (meridiem === 'PM' && hours < 12) hours += 12;
+        if (meridiem === 'AM' && hours === 12) hours = 0;
+        const d = new Date();
+        d.setHours(hours, minutes, 0, 0);
+        deadline = d.getTime();
+      } else if (relative && slot.updated_at) {
+        deadline = new Date(slot.updated_at).getTime() + parseInt(relative[1], 10) * 60000;
+      }
+
+      if (deadline === null || now < deadline) continue;
+
+      const isBackIn = raw.includes('BACK IN') || raw.includes('IN AT') || /^\d/.test(raw);
+      const isOffIn = raw.includes('OFF IN') || raw.includes('OUT AT');
+      const currentlyAvailable = ['AVAILABLE', 'IN'].includes(String(slot.status || '').toUpperCase());
+
+      const update: any = { eta: null, updated_at: db.fn.now() };
+      if (isBackIn && !currentlyAvailable) update.status = 'AVAILABLE';
+      else if (isOffIn && currentlyAvailable) update.status = 'OFFLINE';
+
+      await db('dashboard_status').where('slot_id', slot.slot_id).update(update);
+      console.log(`[Presence] Slot ${slot.slot_id} ETA expired -> ${update.status || 'eta cleared'}`);
+    }
+  };
+
   const refreshPresenceFromBiometrics = async () => {
     const todayDate = new Date().toISOString().split('T')[0];
     const todayStart = new Date();
@@ -3963,7 +4018,15 @@ async function startServer() {
       // Read-only. Presence refresh happens on a timer, not on a public GET.
       const [notices, events, videos, alerts, settings, queue] = await Promise.all([
         db('dashboard_notices').where('is_active', true),
-        db('dashboard_events').where('is_active', true),
+        // Only events that have not already happened. Without the date bound a
+        // past event kept rendering under "Upcoming Event" until someone
+        // remembered to deactivate it.
+        db('dashboard_events')
+          .where('is_active', true)
+          .where(function () {
+            this.whereNull('event_date').orWhere('event_date', '>=', new Date().toLocaleDateString('en-CA'));
+          })
+          .orderBy('event_date', 'asc'),
         db('dashboard_videos').where('is_active', true).orderBy('created_at', 'desc'),
         db('dashboard_alerts').where('is_active', true),
         db('dashboard_settings').first(),
@@ -4030,7 +4093,7 @@ async function startServer() {
     }
   });
 
-  apiRouter.post('/dashboard/queue', authenticate, async (req, res) => {
+  apiRouter.post('/dashboard/queue', authenticate, requireRole(...DISPLAY_MANAGER_ROLES), async (req, res) => {
     try {
       const { current_token, next_token, counter_number, is_visible } = req.body;
       const queue = await db('queue').first();
@@ -4090,7 +4153,7 @@ async function startServer() {
     }
   });
 
-  apiRouter.post('/dashboard/slots/:id', authenticate, async (req, res) => {
+  apiRouter.post('/dashboard/slots/:id', authenticate, requireRole(...DISPLAY_MANAGER_ROLES), async (req, res) => {
     try {
       const { officer_id, status, eta, remarks } = req.body;
       const updateData: any = { updated_at: db.fn.now() };
@@ -4145,7 +4208,7 @@ async function startServer() {
       res.status(500).json({ status: 'error', message: error.message });
     }
   });
-  apiRouter.post('/dashboard/notices', authenticate, async (req, res) => {
+  apiRouter.post('/dashboard/notices', authenticate, requireRole(...DISPLAY_MANAGER_ROLES), async (req, res) => {
     try {
       const [id] = await db('dashboard_notices').insert(req.body);
       const notice = await db('dashboard_notices').where('id', id).first();
@@ -4154,7 +4217,7 @@ async function startServer() {
       res.status(500).json({ status: 'error', message: error.message });
     }
   });
-  apiRouter.put('/dashboard/notices/:id', authenticate, async (req, res) => {
+  apiRouter.put('/dashboard/notices/:id', authenticate, requireRole(...DISPLAY_MANAGER_ROLES), async (req, res) => {
     try {
       await db('dashboard_notices').where('id', req.params.id).update(req.body);
       const notice = await db('dashboard_notices').where('id', req.params.id).first();
@@ -4163,7 +4226,7 @@ async function startServer() {
       res.status(500).json({ status: 'error', message: error.message });
     }
   });
-  apiRouter.delete('/dashboard/notices/:id', authenticate, async (req, res) => {
+  apiRouter.delete('/dashboard/notices/:id', authenticate, requireRole(...DISPLAY_MANAGER_ROLES), async (req, res) => {
     try {
       await db('dashboard_notices').where('id', req.params.id).del();
       res.json({ status: 'success', data: {} });
@@ -4180,7 +4243,7 @@ async function startServer() {
       res.status(500).json({ status: 'error', message: error.message });
     }
   });
-  apiRouter.post('/dashboard/events', authenticate, async (req, res) => {
+  apiRouter.post('/dashboard/events', authenticate, requireRole(...DISPLAY_MANAGER_ROLES), async (req, res) => {
     try {
       const data = pickFields(req.body, ['title', 'event_date', 'event_time', 'location', 'image_url', 'is_active']);
       // Convert empty strings to null for optional fields
@@ -4196,7 +4259,7 @@ async function startServer() {
       res.status(500).json({ status: 'error', message: error.message });
     }
   });
-  apiRouter.put('/dashboard/events/:id', authenticate, async (req, res) => {
+  apiRouter.put('/dashboard/events/:id', authenticate, requireRole(...DISPLAY_MANAGER_ROLES), async (req, res) => {
     try {
       const data = pickFields(req.body, ['title', 'event_date', 'event_time', 'location', 'image_url', 'is_active']);
       // Convert empty strings to null for optional fields
@@ -4212,7 +4275,7 @@ async function startServer() {
       res.status(500).json({ status: 'error', message: error.message });
     }
   });
-  apiRouter.delete('/dashboard/events/:id', authenticate, async (req, res) => {
+  apiRouter.delete('/dashboard/events/:id', authenticate, requireRole(...DISPLAY_MANAGER_ROLES), async (req, res) => {
     try {
       await db('dashboard_events').where('id', req.params.id).del();
       res.json({ status: 'success', data: {} });
@@ -4229,7 +4292,7 @@ async function startServer() {
       res.status(500).json({ status: 'error', message: error.message });
     }
   });
-  apiRouter.post('/dashboard/videos', authenticate, async (req, res) => {
+  apiRouter.post('/dashboard/videos', authenticate, requireRole(...DISPLAY_MANAGER_ROLES), async (req, res) => {
     try {
       const [id] = await db('dashboard_videos').insert(req.body);
       const video = await db('dashboard_videos').where('id', id).first();
@@ -4238,7 +4301,7 @@ async function startServer() {
       res.status(500).json({ status: 'error', message: error.message });
     }
   });
-  apiRouter.post('/dashboard/videos/reorder', authenticate, async (req, res) => {
+  apiRouter.post('/dashboard/videos/reorder', authenticate, requireRole(...DISPLAY_MANAGER_ROLES), async (req, res) => {
     try {
       const { videoIds } = req.body;
       if (!Array.isArray(videoIds)) throw new Error('videoIds must be an array');
@@ -4257,7 +4320,7 @@ async function startServer() {
     }
   });
 
-  apiRouter.delete('/dashboard/videos/:id', authenticate, async (req, res) => {
+  apiRouter.delete('/dashboard/videos/:id', authenticate, requireRole(...DISPLAY_MANAGER_ROLES), async (req, res) => {
     try {
       await db('dashboard_videos').where('id', req.params.id).del();
       res.json({ status: 'success', data: {} });
@@ -4274,7 +4337,7 @@ async function startServer() {
       res.status(500).json({ status: 'error', message: error.message });
     }
   });
-  apiRouter.post('/dashboard/alerts', authenticate, async (req, res) => {
+  apiRouter.post('/dashboard/alerts', authenticate, requireRole(...DISPLAY_MANAGER_ROLES), async (req, res) => {
     try {
       const [id] = await db('dashboard_alerts').insert(req.body);
       const alert = await db('dashboard_alerts').where('id', id).first();
@@ -4283,7 +4346,7 @@ async function startServer() {
       res.status(500).json({ status: 'error', message: error.message });
     }
   });
-  apiRouter.put('/dashboard/alerts/:id', authenticate, async (req, res) => {
+  apiRouter.put('/dashboard/alerts/:id', authenticate, requireRole(...DISPLAY_MANAGER_ROLES), async (req, res) => {
     try {
       await db('dashboard_alerts').where('id', req.params.id).update(req.body);
       const alert = await db('dashboard_alerts').where('id', req.params.id).first();
@@ -4292,7 +4355,7 @@ async function startServer() {
       res.status(500).json({ status: 'error', message: error.message });
     }
   });
-  apiRouter.delete('/dashboard/alerts/:id', authenticate, async (req, res) => {
+  apiRouter.delete('/dashboard/alerts/:id', authenticate, requireRole(...DISPLAY_MANAGER_ROLES), async (req, res) => {
     try {
       await db('dashboard_alerts').where('id', req.params.id).del();
       res.json({ status: 'success', data: {} });
@@ -4309,7 +4372,7 @@ async function startServer() {
       res.status(500).json({ status: 'error', message: error.message });
     }
   });
-  apiRouter.post('/dashboard/settings', authenticate, async (req, res) => {
+  apiRouter.post('/dashboard/settings', authenticate, requireRole(...DISPLAY_MANAGER_ROLES), async (req, res) => {
     try {
       const { settings } = req.body;
       
@@ -4433,6 +4496,38 @@ async function startServer() {
     console.log('DEBUG: Running in DEVELOPMENT mode - Vite middleware mounted (HMR enabled)');
   }
 
+  /**
+   * Verifies a token for the broadcast surface and checks it belongs to someone
+   * allowed to publish to the public display.
+   *
+   * Every live-stream and signalling route used to be completely open: an
+   * anonymous POST could set the image on the lobby screen, and an anonymous
+   * WebSocket could connect as role=broadcaster - which also closed the real
+   * broadcaster's socket and replaced the feed. Viewing stays open; publishing
+   * does not.
+   */
+  const verifyBroadcaster = (token: string | undefined | null): any | null => {
+    if (!token) return null;
+    try {
+      const decoded: any = jwt.verify(String(token).replace(/^Bearer\s+/i, ''), JWT_SECRET);
+      if (!decoded || !DISPLAY_MANAGER_ROLES.includes(decoded.role)) return null;
+      return decoded;
+    } catch {
+      return null;
+    }
+  };
+
+  const requireBroadcaster = (req: any, res: any, next: any) => {
+    const header = req.headers.authorization || req.headers['x-authorization'];
+    const token = header ? String(header).split(' ')[1] : req.query?.token;
+    const decoded = verifyBroadcaster(token);
+    if (!decoded) {
+      return res.status(401).json({ status: 'error', message: 'A display operator token is required to broadcast' });
+    }
+    req.user = decoded;
+    next();
+  };
+
   // --- Live Stream State and Websocket Collections ---
   let broadcasterSocket: any = null;
   const viewerSockets = new Map<string, any>();
@@ -4442,10 +4537,38 @@ async function startServer() {
   const mjpegClients = new Set<any>();
   let latestFrameTime = 0;
 
+  // The queue map is reachable without credentials, so both the number of
+  // queues and their age are bounded. Previously any unseen `target` created an
+  // entry that was never evicted, so repeated posts with invented targets grew
+  // the map until the process ran out of memory.
+  const MAX_SIGNALING_QUEUES = 200;
+  const SIGNALING_QUEUE_TTL_MS = 2 * 60 * 1000;
+  const signalingQueueSeen = new Map<string, number>();
+
+  function pruneSignalingQueues() {
+    const now = Date.now();
+    for (const [target, seen] of signalingQueueSeen) {
+      if (now - seen > SIGNALING_QUEUE_TTL_MS) {
+        signalingQueueSeen.delete(target);
+        messageQueues.delete(target);
+      }
+    }
+    // Still over the cap after expiry: drop the least recently used.
+    if (messageQueues.size > MAX_SIGNALING_QUEUES) {
+      const byAge = [...signalingQueueSeen.entries()].sort((a, b) => a[1] - b[1]);
+      for (const [target] of byAge.slice(0, messageQueues.size - MAX_SIGNALING_QUEUES)) {
+        signalingQueueSeen.delete(target);
+        messageQueues.delete(target);
+      }
+    }
+  }
+
   function queueSignalingMessage(target: string, msg: any) {
+    pruneSignalingQueues();
     if (!messageQueues.has(target)) {
       messageQueues.set(target, []);
     }
+    signalingQueueSeen.set(target, Date.now());
     const q = messageQueues.get(target)!;
     q.push(msg);
     if (q.length > 50) {
@@ -4456,6 +4579,12 @@ async function startServer() {
   // --- WebRTC signaling polling REST API fallback endpoints ---
   apiRouter.post('/live-signaling/register', (req, res) => {
     const { role, id } = req.body;
+    if (role === 'broadcaster') {
+      const header = req.headers.authorization || req.headers['x-authorization'];
+      if (!verifyBroadcaster(header ? String(header).split(' ')[1] : (req.query as any)?.token)) {
+        return res.status(401).json({ status: 'error', message: 'A display operator token is required to broadcast' });
+      }
+    }
     console.log(`[HTTP Signaling] Registered ${role}: ${id}`);
     if (role === 'broadcaster') {
       messageQueues.delete('broadcaster');
@@ -4477,6 +4606,15 @@ async function startServer() {
 
     if (!target) {
       return res.status(400).json({ status: 'error', message: 'Target is required' });
+    }
+
+    // Anyone may answer as a viewer, but only an authenticated operator may
+    // speak as the broadcaster.
+    if (sender === 'broadcaster') {
+      const header = req.headers.authorization || req.headers['x-authorization'];
+      if (!verifyBroadcaster(header ? String(header).split(' ')[1] : (req.query as any)?.token)) {
+        return res.status(401).json({ status: 'error', message: 'A display operator token is required to broadcast' });
+      }
     }
 
     if (target === 'broadcaster') {
@@ -4510,7 +4648,7 @@ async function startServer() {
   });
 
   // --- Live Stream JPEG Frame Transmit & Polling Endpoints ---
-  apiRouter.post('/live-stream/frame', (req, res) => {
+  apiRouter.post('/live-stream/frame', requireBroadcaster, (req, res) => {
     const { frame } = req.body;
     if (frame) {
       latestFrameBase64 = frame;
@@ -4614,6 +4752,11 @@ async function startServer() {
       await refreshPresenceFromBiometrics();
     } catch (err: any) {
       console.error('[Presence] Scheduled refresh failed:', err.message);
+    }
+    try {
+      await applyExpiredSlotEtas();
+    } catch (err: any) {
+      console.error('[Presence] Slot ETA sweep failed:', err.message);
     }
   };
   void runPresenceRefresh();
@@ -4795,14 +4938,28 @@ async function startServer() {
   });
 
   httpServer.on('upgrade', (request: any, socket: any, head: any) => {
-    const pathname = request.url ? request.url.split('?')[0] : '';
-    if (pathname === '/api/live-stream' || pathname === '/live-stream' || pathname.endsWith('live-stream')) {
-      wss.handleUpgrade(request, socket, head, (ws) => {
-        wss.emit('connection', ws, request);
-      });
-    } else {
+    const [pathname, query] = String(request.url || '').split('?');
+    const isLiveStream = pathname === '/api/live-stream' || pathname === '/live-stream' || pathname.endsWith('live-stream');
+    if (!isLiveStream) {
       socket.destroy();
+      return;
     }
+
+    // Connecting as the broadcaster takes over the feed and closes whoever was
+    // broadcasting before, so it has to prove it belongs to a display operator.
+    // Browsers cannot set headers on a WebSocket handshake, hence the query
+    // parameter. Viewers connect without credentials, as before.
+    const params = new URLSearchParams(query || '');
+    if (params.get('role') === 'broadcaster' && !verifyBroadcaster(params.get('token'))) {
+      console.warn('[WS WEBRTC] Rejected unauthenticated broadcaster upgrade');
+      socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit('connection', ws, request);
+    });
   });
 }
 
