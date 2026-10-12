@@ -252,6 +252,7 @@ export class ApiClient {
   async updateBookingStatus(id: string | number, status: string) { return this.request<any>(`/resources/bookings/${id}/status`, { method: 'PUT', body: JSON.stringify({ status }) }); }
   async getJournal(date?: string, mode: string = 'DAILY') { return this.request<any[]>(`/journal?date=${date || ''}&mode=${mode}`); }
   async saveJournalEntry(entry: any) { return this.request<any>('/journal', { method: 'POST', body: JSON.stringify(entry) }); }
+  async deleteJournalEntry(id: string | number) { return this.request<any>(`/journal/${id}`, { method: 'DELETE' }); }
   async getCircles() { return this.request<any[]>('/circles'); }
   async createCircle(data: any) { return this.request<any>('/circles', { method: 'POST', body: JSON.stringify(data) }); }
   async getProjects(circleId: string | number) { return this.request<any[]>(`/circles/${circleId}/projects`); }

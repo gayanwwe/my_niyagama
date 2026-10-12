@@ -1018,9 +1018,11 @@ async function startServer() {
       await db.schema.createTable('journal_entries', (table) => {
         table.bigIncrements('id');
         table.bigInteger('officer_id').unsigned().references('id').inTable('officers');
-        table.string('title');
+        table.string('title').nullable();
         table.string('category').nullable();
         table.text('content');
+        table.text('outcomes').nullable();
+        table.text('challenges').nullable();
         table.date('date');
         table.timestamps(true, true);
       });
@@ -1172,6 +1174,10 @@ async function startServer() {
       // column the insert fails and no leave can be applied for at all.
       { table: 'leaves', column: 'sub_type', create: (t) => t.string('sub_type').nullable() },
       { table: 'albums', column: 'cover_url', create: (t) => t.string('cover_url').nullable() },
+      // The journal form collects outcomes and challenges; the table never had
+      // columns for them, so they had nowhere to be stored.
+      { table: 'journal_entries', column: 'outcomes', create: (t) => t.text('outcomes').nullable() },
+      { table: 'journal_entries', column: 'challenges', create: (t) => t.text('challenges').nullable() },
       { table: 'community_posts', column: 'images', create: (t) => t.text('images').nullable() },
       // Soft-delete columns, mirrored from the /setup-db schema so both paths agree.
       { table: 'officers', column: 'is_deleted', create: (t) => t.boolean('is_deleted').defaultTo(false) },
@@ -3393,12 +3399,29 @@ async function startServer() {
   apiRouter.post('/journal', authenticate, async (req: any, res) => {
     try {
       const [id] = await db('journal_entries').insert({
-        ...pickFields(req.body, ['title', 'category', 'content']),
+        ...pickFields(req.body, ['title', 'category', 'content', 'outcomes', 'challenges']),
         officer_id: req.user.id,
         date: req.body?.date || new Date().toLocaleDateString('en-CA')
       });
       const entry = await db('journal_entries').where('id', id).first();
       res.json({ status: 'success', data: entry });
+    } catch (error: any) {
+      res.status(500).json({ status: 'error', message: error.message });
+    }
+  });
+
+  apiRouter.delete('/journal/:id', authenticate, async (req: any, res) => {
+    try {
+      const entry = await db('journal_entries').where('id', req.params.id).first();
+      if (!entry) {
+        return res.status(404).json({ status: 'error', message: 'Journal entry not found' });
+      }
+      // The journal is a personal record; only its author may remove an entry.
+      if (String(entry.officer_id) !== String(req.user.id)) {
+        return res.status(403).json({ status: 'error', message: 'You can only delete your own journal entries' });
+      }
+      await db('journal_entries').where('id', req.params.id).del();
+      res.json({ status: 'success', data: { id: Number(req.params.id) } });
     } catch (error: any) {
       res.status(500).json({ status: 'error', message: error.message });
     }

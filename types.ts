@@ -159,6 +159,9 @@ export interface Circular {
 export interface DiaryEntry {
   id: number | string;
   officer_id?: number | string;
+  /** Short heading. The column existed on journal_entries but the type and the
+   *  entry form both omitted it, so entries were a wall of body text. */
+  title?: string;
   content: string;
   date: string;
   type?: string;
