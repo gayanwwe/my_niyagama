@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import type { Officer, UserActivity, LeaveRequest } from '../types';
 import AttendanceCalendar from '../components/AttendanceCalendar';
@@ -23,8 +23,17 @@ const ProfilePage: React.FC<Props> = ({ user: currentUser, setUser, lang, setLan
   const isPrivileged = ['SA', 'IT', 'ADMIN'].includes(currentUser.role) || currentUser.post?.includes('Administrative Officer') || currentUser.post?.includes('ITO');
   const canViewProfile = isOwnProfile || isPrivileged;
 
+
   const [officer, setOfficer] = useState<Officer | null>(null);
   const [activeTab, setActiveTab] = useState<'DETAILS' | 'ATTENDANCE' | 'ACTIVITY' | 'LEAVES' | 'SETTINGS'>('DETAILS');
+  // Attendance and Leave Log are not offered on your own profile any more, so
+  // a tab carried over from viewing another officer would render with no way
+  // back to it.
+  useEffect(() => {
+    if (isOwnProfile && (activeTab === 'ATTENDANCE' || activeTab === 'LEAVES')) {
+      setActiveTab('DETAILS');
+    }
+  }, [isOwnProfile, activeTab]);
   const [isVerifyingPic, setIsVerifyingPic] = useState(false);
   
   // Edit states
@@ -365,18 +374,26 @@ const ProfilePage: React.FC<Props> = ({ user: currentUser, setUser, lang, setLan
               icon={<Icons.Profile width={18} />} 
               label={t('විස්තර', 'Personnel Info')} 
             />
-            <NavButton 
-              active={activeTab === 'ATTENDANCE'} 
-              onClick={() => setActiveTab('ATTENDANCE')} 
-              icon={<Icons.Calendar width={18} />} 
-              label={t('පැමිණීම', 'Attendance')} 
-            />
-            <NavButton 
-              active={activeTab === 'LEAVES'} 
-              onClick={() => setActiveTab('LEAVES')} 
-              icon={<Icons.Leave width={18} />} 
-              label={t('නිවාඩු', 'Leave Log')} 
-            />
+            {/* Your own attendance and leave log now live in Leave Management,
+                where officers look for them. These stay here only when a
+                privileged user is reviewing another officer, which is the one
+                case Leave Management does not cover. */}
+            {!isOwnProfile && (
+              <>
+                <NavButton 
+                  active={activeTab === 'ATTENDANCE'} 
+                  onClick={() => setActiveTab('ATTENDANCE')} 
+                  icon={<Icons.Calendar width={18} />} 
+                  label={t('පැමිණීම', 'Attendance')} 
+                />
+                <NavButton 
+                  active={activeTab === 'LEAVES'} 
+                  onClick={() => setActiveTab('LEAVES')} 
+                  icon={<Icons.Leave width={18} />} 
+                  label={t('නිවාඩු', 'Leave Log')} 
+                />
+              </>
+            )}
             <NavButton 
               active={activeTab === 'ACTIVITY'} 
               onClick={() => setActiveTab('ACTIVITY')} 
@@ -392,6 +409,27 @@ const ProfilePage: React.FC<Props> = ({ user: currentUser, setUser, lang, setLan
               />
             )}
           </div>
+
+          {isOwnProfile && (
+            <Link
+              to="/leave"
+              className="block bg-blue-50 border border-blue-100 rounded-[2.5rem] p-6 hover:bg-blue-100 active:bg-blue-200 transition-colors group"
+            >
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-[#1877F2] text-white flex items-center justify-center flex-none">
+                  <Icons.Leave width={18} />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-[11px] font-black uppercase tracking-widest text-[#1877F2]">
+                    {t('නිවාඩු කළමනාකරණය', 'Leave Management')}
+                  </p>
+                  <p className="text-[10px] font-bold text-slate-500 leading-snug mt-0.5">
+                    {t('ඔබගේ පැමිණීම සහ නිවාඩු ඉතිහාසය', 'Your attendance and leave history')}
+                  </p>
+                </div>
+              </div>
+            </Link>
+          )}
 
           {!isOwnProfile && (
             <div className="bg-[#003366] rounded-[2.5rem] p-8 text-white space-y-4 relative overflow-hidden group">

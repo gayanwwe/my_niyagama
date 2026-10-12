@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import type { Officer, LeaveRequest } from '../types';
 import { api } from '../service/api';
 import { Skeleton } from '../components/Skeleton';
+import AttendanceCalendar from '../components/AttendanceCalendar';
 import { z } from 'zod';
 import { toast } from 'react-hot-toast';
 
@@ -18,6 +19,10 @@ const LeaveModule: React.FC<Props> = ({ user, lang }) => {
   const [isLoading, setIsLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  // Leave history and the attendance calendar used to be buried in the profile
+  // page. They belong with leave, but stacking both on one screen makes a long
+  // scroll on a phone, so they sit behind a switch.
+  const [view, setView] = useState<'LEAVES' | 'ATTENDANCE'>('LEAVES');
 
   const [form, setForm] = useState({
     type: 'CASUAL' as 'CASUAL' | 'SICK' | 'VACATION' | 'DUTY' | 'SHORT_LEAVE' | 'HALF_DAY',
@@ -142,10 +147,40 @@ const LeaveModule: React.FC<Props> = ({ user, lang }) => {
         ))}
       </div>
 
+      <div className="flex gap-2 bg-white p-2 rounded-[1.5rem] shadow-sm border border-slate-100 w-full sm:w-auto sm:inline-flex">
+        {([
+          ['LEAVES', t('නිවාඩු ඉතිහාසය', 'Leave History')],
+          ['ATTENDANCE', t('පැමිණීම', 'Attendance')],
+        ] as const).map(([key, label]) => (
+          <button
+            key={key}
+            onClick={() => setView(key)}
+            className={`flex-1 sm:flex-none min-h-[44px] px-6 rounded-[1rem] text-[11px] font-black uppercase tracking-widest transition-all ${
+              view === key ? 'bg-[#1877F2] text-white shadow-lg shadow-blue-500/20' : 'text-slate-400 hover:text-slate-600 active:bg-slate-50'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {view === 'ATTENDANCE' ? (
+        <div className="bg-white rounded-[3.5rem] shadow-sm border border-slate-100 overflow-hidden">
+          <div className="p-8 sm:p-10 border-b border-slate-100 bg-slate-50">
+            <h3 className="text-sm font-black uppercase tracking-widest text-slate-800">{t('මගේ පැමිණීම', 'My Attendance')}</h3>
+            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">
+              {t('මාසික පැමිණීම සහ ප්‍රමාදයන්', 'Scans, short leave and half days by month')}
+            </p>
+          </div>
+          <div className="p-4 sm:p-6">
+            <AttendanceCalendar user={user} lang={lang} />
+          </div>
+        </div>
+      ) : (
       <div className="bg-white rounded-[3.5rem] shadow-sm border border-slate-100 overflow-hidden">
-        <div className="p-10 border-b bg-slate-50 flex items-center justify-between">
-           <h3 className="text-sm font-black uppercase tracking-widest text-slate-800">My Leave History</h3>
-           <span className="bg-slate-200 px-3 py-1 rounded-full text-[9px] font-black">{leaves.length} Applications</span>
+        <div className="p-8 sm:p-10 border-b bg-slate-50 flex items-center justify-between gap-4">
+           <h3 className="text-sm font-black uppercase tracking-widest text-slate-800">{t('මගේ නිවාඩු ඉතිහාසය', 'My Leave History')}</h3>
+           <span className="bg-slate-200 px-3 py-1 rounded-full text-[9px] font-black whitespace-nowrap">{leaves.length} Applications</span>
         </div>
         <div className="p-0 overflow-x-auto">
           {isLoading ? (
@@ -200,6 +235,7 @@ const LeaveModule: React.FC<Props> = ({ user, lang }) => {
           )}
         </div>
       </div>
+      )}
 
       {isModalOpen && (
         <div className="fixed inset-0 z-[100] bg-slate-900/40 backdrop-blur-md flex items-center justify-center p-4 animate-fade-in">
