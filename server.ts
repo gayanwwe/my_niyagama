@@ -2200,38 +2200,94 @@ async function startServer() {
     }
   });
 
+  // The six executive posts the public display tracks, in the order it shows
+  // them. dashboard_status holds one row per slot with the officer assigned to
+  // it, which is what the Display control screen edits.
+  const EXECUTIVE_SLOTS: { id: string; label: string }[] = [
+    { id: 'ds', label: 'Divisional Secretary' },
+    { id: 'ads', label: 'Assistant Divisional Secretary' },
+    { id: 'acc', label: 'Accountant' },
+    { id: 'ao', label: 'Administrative Officer' },
+    { id: 'adp', label: 'Assistant Director of Planning' },
+    { id: 'agn', label: 'Administrative Grama Niladari' },
+  ];
+
   apiRouter.get('/presence/executive-status', authenticate, async (req, res) => {
     try {
       const dateParam = req.query.date as string;
       const date = dateParam || new Date().toLocaleDateString('en-CA');
 
-      const allOfficers = await db('officers')
-        .whereIn('role', ['EXECUTIVE', 'EX'])
-        .select('id', 'name', 'post', 'profile_pic', 'dashboard_status', 'eta');
-
-      const executives = allOfficers.filter((officer) => {
-        const post = (officer.post || '').toLowerCase();
-        return (
-          post.includes('divisional secretary') ||
-          post.includes('assistant divisional secretary') ||
-          post.includes('accountant') ||
-          post.includes('planning') ||
-          post.includes('administrative officer') ||
-          post.includes('grama') ||
-          post.includes('ds') ||
-          post.includes('ads') ||
-          post.includes('adp') ||
-          post.includes('ao') ||
-          post.includes('agn')
+      // Who counts as an executive comes from the slot assignments, not from a
+      // guess at role and job title. The previous version required role to be
+      // EXECUTIVE or EX *and* the post to contain one of a hardcoded list of
+      // keywords; against a real roster, where these officers are recorded with
+      // ordinary roles and local job titles, both tests matched nobody and the
+      // panel was simply empty.
+      const slotRows = await db('dashboard_status')
+        .leftJoin('officers', 'dashboard_status.officer_id', 'officers.id')
+        .select(
+          'dashboard_status.slot_id',
+          'dashboard_status.officer_id',
+          'dashboard_status.status as slot_status',
+          'dashboard_status.eta as slot_eta',
+          'officers.name',
+          'officers.post',
+          'officers.profile_pic',
+          'officers.dashboard_status as officer_status',
+          'officers.eta as officer_eta',
         );
-      });
+
+      const slotById = new Map(slotRows.map((r: any) => [r.slot_id, r]));
+      let executives = EXECUTIVE_SLOTS
+        .map(({ id, label }) => {
+          const row: any = slotById.get(id);
+          if (!row || !row.officer_id) return null; // slot not filled
+          return {
+            id: row.officer_id,
+            name: row.name || label,
+            // The slot is the executive function being covered, which is what
+            // this panel is about. An officer's own post is often their
+            // substantive grade (e.g. "Development Officer") and would make
+            // the display read wrong.
+            post: label,
+            profile_pic: row.profile_pic,
+            slotStatus: row.slot_status,
+            slotEta: row.slot_eta,
+            officerStatus: row.officer_status,
+            officerEta: row.officer_eta,
+          };
+        })
+        .filter(Boolean) as any[];
+
+      // Fall back to the old role/post heuristic where no slots are assigned,
+      // so a deployment that records proper EXECUTIVE roles still works.
+      if (executives.length === 0) {
+        const candidates = await db('officers')
+          .whereIn('role', ['EXECUTIVE', 'EX'])
+          .select('id', 'name', 'post', 'profile_pic', 'dashboard_status', 'eta');
+        executives = candidates
+          .filter((o: any) => {
+            const post = (o.post || '').toLowerCase();
+            return EXECUTIVE_SLOTS.some(sl => post.includes(sl.label.toLowerCase()))
+              || ['divisional secretary', 'accountant', 'planning', 'administrative officer', 'grama'].some(k => post.includes(k));
+          })
+          .map((o: any) => ({
+            id: o.id,
+            name: o.name,
+            post: o.post,
+            profile_pic: o.profile_pic,
+            slotStatus: null,
+            slotEta: null,
+            officerStatus: o.dashboard_status,
+            officerEta: o.eta,
+          }));
+      }
 
       if (executives.length === 0) {
         return res.json({ status: 'success', data: [] });
       }
 
-      // Three bulk reads rather than two queries per executive.
-      const execIds = executives.map((e) => e.id);
+      const execIds = executives.map(e => e.id);
       const [attendanceRows, unavailabilityRows, leaveRows] = await Promise.all([
         db('attendance').whereIn('officer_id', execIds).where('date', date),
         db('unavailability').whereIn('officer_id', execIds).where('date', date),
@@ -2246,29 +2302,30 @@ async function startServer() {
       const unavailabilityBy = new Map(unavailabilityRows.map((r: any) => [String(r.officer_id), r]));
       const leaveBy = new Map(leaveRows.map((r: any) => [String(r.officer_id), r]));
 
+      // Statuses are stored inconsistently ('Available', 'AVAILABLE', 'OFFLINE').
+      const normalise = (v: any) => String(v || '').trim().toUpperCase();
+
       const statusSummary = executives.map((exec) => {
         const key = String(exec.id);
         const att: any = attendanceBy.get(key);
         const unavail: any = unavailabilityBy.get(key);
         const leave: any = leaveBy.get(key);
 
+        // A status set on the slot is the operator's deliberate choice and
+        // outranks anything inferred; the officer's own field is the next
+        // explicit signal.
+        const manual = normalise(exec.slotStatus) !== 'OFFLINE' && normalise(exec.slotStatus) !== ''
+          ? normalise(exec.slotStatus)
+          : normalise(exec.officerStatus);
+
         let status_label = 'OFFLINE';
-        let eta = exec.eta || '';
+        let eta = exec.slotEta || exec.officerEta || '';
 
-        const manual = (exec.dashboard_status || 'OFFLINE').toUpperCase();
-
-        if (manual !== 'OFFLINE' && manual !== 'AVAILABLE') {
-          // An explicitly set status (BUSY, MEETING, OFF TO FIELD...) is a
-          // deliberate act by the officer and outranks anything inferred.
+        if (manual && manual !== 'OFFLINE' && manual !== 'AVAILABLE') {
           status_label = manual.includes('FIELD') ? 'OFF TO FIELD' : manual;
         } else if (leave) {
-          // Approved leave was never consulted here, so an officer on
-          // sanctioned leave simply read as OFFLINE.
           status_label = 'ON LEAVE';
         } else if (unavail) {
-          // Unavailability used to be checked only when there was no
-          // attendance row, so an officer who had scanned in and then marked
-          // themselves unavailable still showed as AVAILABLE.
           status_label = 'BUSY';
           eta = unavail.eta || eta;
         } else if (att) {
