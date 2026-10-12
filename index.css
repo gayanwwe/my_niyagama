@@ -50,3 +50,69 @@ body {
   padding: 0;
   transition: background-color 0.3s ease, color 0.3s ease;
 }
+
+/* ---------------------------------------------------------------------------
+   Mobile / PWA
+   This app is used mainly on phones, installed to the home screen.
+   --------------------------------------------------------------------------- */
+
+html {
+  /* Stop iOS inflating text in landscape. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  /* Grey flash on every tap looks broken in a standalone PWA. */
+  -webkit-tap-highlight-color: transparent;
+  /* Keeps pull-to-refresh and rubber-banding from detaching the shell. */
+  overscroll-behavior-y: contain;
+}
+
+/* Removes the 300ms click delay without disabling pinch zoom. */
+button, a, [role="button"], input, select, textarea, label {
+  touch-action: manipulation;
+}
+
+/* Long officer names and Sinhala strings should wrap, not force a sideways scroll. */
+h1, h2, h3, h4, p, span, td, th, li {
+  overflow-wrap: break-word;
+}
+
+/* Notch and home indicator. The nav is sticky at the top and the content area
+   scrolls underneath it, so each gets the inset on its own side. */
+@supports (padding: env(safe-area-inset-top)) {
+  nav {
+    padding-top: env(safe-area-inset-top);
+    padding-left: max(env(safe-area-inset-left), 0px);
+    padding-right: max(env(safe-area-inset-right), 0px);
+  }
+  main {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
+
+@media (max-width: 640px) {
+  /* The interface leans on very small type - 594 places use sizes below 11px,
+     some as low as 3px, which is unreadable on a phone held at arm's length.
+     Raising the floor here lifts every one of them without touching hundreds of
+     class names, and desktop layouts keep their original density. */
+  .text-\[3px\], .text-\[5px\], .text-\[5\.5px\], .text-\[6px\],
+  .text-\[6\.5px\], .text-\[7px\], .text-\[7\.5px\] { font-size: 10px; }
+  .text-\[8px\], .text-\[8\.5px\] { font-size: 11px; }
+  .text-\[9px\] { font-size: 11.5px; }
+  .text-\[10px\] { font-size: 12px; }
+
+  /* Safari zooms the whole page when a field smaller than 16px takes focus,
+     and never zooms back out. */
+  input, select, textarea {
+    font-size: 16px !important;
+  }
+
+  /* No blanket min-height here on purpose. Tailwind v4 emits utilities inside a
+     cascade layer, and rules in this file are un-layered, so anything written
+     here beats an explicit utility class no matter how specific that class is -
+     a global rule plus an escape hatch silently overrode min-h-[44px] on the
+     header controls. Touch targets are set per element instead; measurement
+     showed the existing controls already met 44px. */
+}

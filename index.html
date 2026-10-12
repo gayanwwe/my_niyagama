@@ -2,12 +2,22 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <!-- viewport-fit=cover lets the layout use env(safe-area-inset-*) so content
+         clears the notch and the home indicator. Pinch zoom is deliberately NOT
+         disabled: blocking it fails WCAG 1.4.4, and recent iOS ignores the
+         request anyway, so officers who need to enlarge text now can. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta name="theme-color" content="#1877F2">
     <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="My Niyagama">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <link rel="manifest" href="/manifest.json">
+    <meta name="format-detection" content="telephone=no">
+    <!-- The manifest link is injected by vite-plugin-pwa. A second hand-written
+         link used to sit here, and browsers honour the first one they find, so
+         the plugin's manifest was being ignored entirely. -->
     <link rel="icon" type="image/png" href="/logo.png">
+    <link rel="apple-touch-icon" href="/icon-192.png">
     <title>My Niyagama - Divisional Secretariat System</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>

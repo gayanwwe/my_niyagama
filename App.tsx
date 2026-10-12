@@ -228,7 +228,7 @@ const AppContent: React.FC = () => {
   return (
     <div className="min-h-screen bg-[var(--background)] text-[var(--foreground)] flex flex-col font-sans overflow-hidden transition-colors duration-300">
       <nav className="h-14 md:h-16 bg-[var(--card)] border-b border-[var(--border)] flex items-center px-4 md:px-6 sticky top-0 z-[100] shadow-sm">
-        <div className={`items-center gap-2 md:gap-3 flex-none w-auto min-w-[60px] lg:min-w-[180px] ${isMobilePortrait ? 'hidden' : 'flex'}`}>
+        <div className={`items-center gap-2 md:gap-3 flex-none w-auto lg:min-w-[180px] ${isMobilePortrait ? 'hidden' : 'flex'}`}>
           <Link to="/" className="w-10 h-10 bg-white rounded-xl flex items-center justify-center shadow-lg hover:scale-105 transition-all flex-shrink-0 p-1.5 border border-slate-100">
             <img src="/logo.png" alt="N" className="w-full h-full object-contain" />
           </Link>
@@ -246,21 +246,26 @@ const AppContent: React.FC = () => {
           </div>
         </div>
 
-        <div className={`items-center gap-1 md:gap-3 flex-none w-auto min-w-[60px] lg:min-w-[180px] justify-end ${isMobilePortrait ? 'hidden' : 'flex'}`}>
+        {/* On a phone this whole block used to be hidden, which left no way to
+            switch language, sign out, or reach the profile - on the platform
+            the app is mainly used on. Language and logout now stay; the theme
+            toggle and the name label are the only things that drop away. */}
+        <div className="flex items-center gap-1 md:gap-3 flex-none w-auto justify-end lg:min-w-[180px]">
           <button
             onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
-            className="p-2 bg-[var(--background)] rounded-full text-slate-500 hover:text-[#1877F2] transition-colors"
+            className="hidden sm:block p-2 bg-[var(--background)] rounded-full text-slate-500 hover:text-[#1877F2] transition-colors"
             title="Toggle Theme"
           >
             {theme === 'light' ? '🌙' : '☀️'}
           </button>
           <button
             onClick={() => setLang(lang === 'EN' ? 'SI' : 'EN')}
-            className="px-2 md:px-3 py-1.5 bg-[var(--background)] rounded-lg text-[10px] font-black uppercase tracking-widest text-slate-500 hover:bg-slate-100 transition-colors hidden sm:block whitespace-nowrap"
+            className="min-w-[44px] min-h-[44px] px-3 flex items-center justify-center bg-[var(--background)] rounded-xl text-[11px] font-black uppercase tracking-widest text-slate-500 hover:bg-slate-100 active:bg-slate-200 transition-colors whitespace-nowrap"
+            title="Switch language"
           >
             {lang === 'EN' ? 'සිං' : 'EN'}
           </button>
-          <Link to="/profile" className="flex items-center gap-2 p-1 pl-1 md:pl-3 bg-[var(--background)] rounded-full border border-[var(--border)] hover:bg-slate-100 group transition-all flex-shrink-0">
+          <Link to="/profile" className="min-h-[44px] flex items-center gap-2 p-1 md:pl-3 bg-[var(--background)] rounded-full border border-[var(--border)] hover:bg-slate-100 active:bg-slate-200 group transition-all flex-shrink-0" title="Profile">
             <span className="text-[10px] font-black text-slate-600 uppercase tracking-widest hidden xl:block pr-1">{user.name?.split(' ')[0]}</span>
             <img
               src={user.profile_pic || `https://ui-avatars.com/api/?name=${encodeURIComponent(user.name || 'Officer')}&background=1877F2&color=fff`}
@@ -270,7 +275,7 @@ const AppContent: React.FC = () => {
           </Link>
           <button
             onClick={handleLogout}
-            className="p-2 md:p-2.5 bg-[var(--background)] text-slate-500 rounded-full hover:bg-red-50 hover:text-red-500 transition-all flex-none"
+            className="min-w-[44px] min-h-[44px] flex items-center justify-center bg-[var(--background)] text-slate-500 rounded-full hover:bg-red-50 hover:text-red-500 active:bg-red-100 transition-all flex-none"
             title="Logout"
           >
             <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
