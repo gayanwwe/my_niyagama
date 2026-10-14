@@ -2910,12 +2910,17 @@ async function startServer() {
       }
     }
 
-    // Conversions into casual leave. Short leaves convert per month, because the
-    // entitlement is two per month (ATTENDANCE_RULES.SHORT_LEAVE_COUNT).
+    // Conversions into casual leave: two short leaves cost one casual day, and
+    // the remainder carries across the year rather than being written off each
+    // month.
+    //
+    // This was converting month by month, which quietly charged nothing for a
+    // lone short leave. SHORT_LEAVE_COUNT already caps a month at two - a third
+    // is recorded as a HALF_DAY by calculateAttendanceStatus - so a per-month
+    // floor could only ever return 0 or 1, and an officer taking one short
+    // leave in each of twelve months was charged for none of them.
     balances.short_leave_count = Object.values(shortLeavesPerMonth).reduce((a, b) => a + b, 0);
-    for (const monthlyCount of Object.values(shortLeavesPerMonth)) {
-      balances.casual += Math.floor(monthlyCount / 2);
-    }
+    balances.casual += Math.floor(balances.short_leave_count / 2);
     balances.casual += balances.half_day_count;
 
     return balances;
