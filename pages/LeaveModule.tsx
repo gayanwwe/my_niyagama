@@ -131,13 +131,28 @@ const LeaveModule: React.FC<Props> = ({ user, lang }) => {
         </button>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
         {[
           {
             label: t('අනියම් නිවාඩු', 'Casual Leave'),
             val: balances ? `${balances.casual}/${balances.casual_total}` : '--/--',
             color: 'text-blue-500',
-            sub: balances ? `${balances.short_leave_count} SL / ${balances.half_day_count} HD used` : null,
+            sub: balances ? `${balances.half_day_count} half days included` : null,
+          },
+          {
+            label: t('වාර්ෂික නිවාඩු', 'Vacation'),
+            val: balances ? `${balances.vacation}/${balances.vacation_total}` : '--/--',
+            color: 'text-amber-500',
+            sub: balances?.vacation_from_casual ? `${balances.vacation_from_casual} carried from casual` : null,
+          },
+          {
+            // Short leave is a separate allowance of two a month. It does not
+            // convert into casual or vacation and does not carry over, so it is
+            // reported for the current month only.
+            label: t('කෙටි නිවාඩු', 'Short Leave'),
+            val: balances ? `${balances.short_leave_count ?? 0}/${balances.short_leave_total ?? 2}` : '--/--',
+            color: 'text-orange-500',
+            sub: t('මෙම මාසය', 'This month — resets monthly'),
           },
           {
             // Sick leave is not a method here, and the tile showed an
@@ -147,15 +162,9 @@ const LeaveModule: React.FC<Props> = ({ user, lang }) => {
             val: balances ? `${balances.absent_days ?? 0}` : '--',
             color: 'text-rose-500',
             sub: balances?.counted_up_to ? `No scan up to ${balances.counted_up_to}` : 'Working days with no scan',
-          },
-          {
-            label: t('වාර්ෂික නිවාඩු', 'Vacation'),
-            val: balances ? `${balances.vacation}/${balances.vacation_total}` : '--/--',
-            color: 'text-amber-500',
-            sub: balances?.vacation_from_casual ? `${balances.vacation_from_casual} carried from casual` : null,
           }
         ].map((stat, i) => (
-          <div key={i} className="bg-white p-8 rounded-[2.5rem] shadow-sm border border-slate-100">
+          <div key={i} className="bg-white p-5 sm:p-7 rounded-[2rem] sm:rounded-[2.5rem] shadow-sm border border-slate-100">
              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{stat.label}</p>
              <h3 className={`text-3xl font-black mt-4 tracking-tighter ${stat.color}`}>{stat.val}</h3>
              <p className="text-[9px] text-slate-300 font-bold uppercase mt-2">

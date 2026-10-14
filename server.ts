@@ -10,7 +10,7 @@ import fs from 'fs';
 import crypto from 'crypto';
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
-import { calculateAttendanceStatus, timeToMins } from './src/lib/attendanceUtils';
+import { calculateAttendanceStatus, timeToMins, ATTENDANCE_RULES } from './src/lib/attendanceUtils';
 import type { Officer } from './types';
 
 dotenv.config();
@@ -2977,17 +2977,22 @@ async function startServer() {
     (balances as any).absent_days = absentDays;
     (balances as any).counted_up_to = absenceLimit;
 
-    // Conversions into casual leave: two short leaves cost one casual day, and
-    // the remainder carries across the year rather than being written off each
-    // month.
+    // Short leave is its own allowance: two per month, and it does not convert
+    // into casual or vacation at any rate. The monthly limit is enforced where
+    // attendance is computed - a third short leave in a month is recorded as a
+    // HALF_DAY instead - so nothing here needs to cap it.
     //
-    // This was converting month by month, which quietly charged nothing for a
-    // lone short leave. SHORT_LEAVE_COUNT already caps a month at two - a third
-    // is recorded as a HALF_DAY by calculateAttendanceStatus - so a per-month
-    // floor could only ever return 0 or 1, and an officer taking one short
-    // leave in each of twelve months was charged for none of them.
-    balances.short_leave_count = Object.values(shortLeavesPerMonth).reduce((a, b) => a + b, 0);
-    balances.casual += Math.floor(balances.short_leave_count / 2);
+    // It also does not accumulate: an unused month is not carried forward, and
+    // a used one is not carried back. Each month starts again at zero of two,
+    // so only the current month is reported.
+    const thisMonthKey = `${year}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
+    balances.short_leave_count = shortLeavesPerMonth[thisMonthKey] || 0;
+    (balances as any).short_leave_total = ATTENDANCE_RULES.STANDARD.SHORT_LEAVE_COUNT;
+    (balances as any).short_leave_month = thisMonthKey;
+    // Kept for the year view; it is not charged against anything.
+    (balances as any).short_leave_year_count = Object.values(shortLeavesPerMonth).reduce((a, b) => a + b, 0);
+
+    // Half days still come out of casual leave.
     balances.casual += balances.half_day_count;
 
     // --- Overflow casual into vacation ---

@@ -188,7 +188,7 @@ const DashboardOfficer: React.FC<Props> = ({ user, lang }) => {
     status: 'PRESENT'
   });
 
-  const [leaveStats, setLeaveStats] = useState({ taken: 0, total: 42 });
+  const [leaveStats, setLeaveStats] = useState({ taken: 0, total: 42, shortLeaveUsed: 0, shortLeaveTotal: 2 });
   const [activeModal, setActiveModal] = useState<'CHECKIN' | 'UNAVAILABILITY' | 'STATUS' | null>(null);
   const [checkInTime, setCheckInTime] = useState('');
   const [timeLeftStr, setTimeLeftStr] = useState<string | null>(null);
@@ -230,7 +230,13 @@ const DashboardOfficer: React.FC<Props> = ({ user, lang }) => {
       // combined pool rather than casual alone.
       const taken = b.combined_used ?? ((b.casual || 0) + (b.vacation || 0));
       const total = b.combined_total ?? ((b.casual_total || 21) + (b.vacation_total || 21));
-      setLeaveStats({ taken, total });
+      setLeaveStats({
+        taken,
+        total,
+        // Short leave is a separate monthly allowance, reported for this month.
+        shortLeaveUsed: b.short_leave_count ?? 0,
+        shortLeaveTotal: b.short_leave_total ?? 2,
+      });
 
       if (publicDashboardResult && publicDashboardResult.status === 'success') {
         const d = publicDashboardResult.data || {};
@@ -485,10 +491,13 @@ const DashboardOfficer: React.FC<Props> = ({ user, lang }) => {
             />
           </div>
           <div className="snap-center">
+            {/* This used to read attendance.short_leave_minutes - a duration for
+                today - over 2, so a 60 minute short leave rendered as "60/2".
+                Short leave is a monthly count of two. */}
             <StatCard 
               label={t('shortLeaves')} 
-              value={`${attendance.short_leave_minutes}/2`} 
-              sub="Monthly Limit" 
+              value={`${leaveStats.shortLeaveUsed}/${leaveStats.shortLeaveTotal}`} 
+              sub="This month" 
               color="text-amber-600" 
               icon="⏳" 
             />
