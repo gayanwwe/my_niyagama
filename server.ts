@@ -2042,8 +2042,8 @@ async function startServer() {
    */
   apiRouter.get('/attendance/leaderboard', authenticate, async (req: any, res) => {
     try {
-      const MIN_DAYS_WITH_DATA = 5;   // guards against a 1-of-1 day scoring 100%
-      const WINDOW_DAYS = 30;
+      const MIN_DAYS_WITH_DATA = 5;    // an officer needs some record to be judged
+      const MIN_WORKING_DAYS = 20;     // and enough of the year to have passed
 
       const calendar = await loadLeaveCalendar();
       const horizon = await getAttendanceHorizon();
@@ -2052,9 +2052,10 @@ async function startServer() {
       // Never score past the last day the division has biometric data for,
       // otherwise un-imported days read as everyone failing to attend.
       const windowEnd = horizon && horizon < today ? horizon : today;
-      const from = new Date(`${windowEnd}T00:00:00`);
-      from.setDate(from.getDate() - WINDOW_DAYS);
-      const windowStart = toDateKey(from);
+      // The whole year to date. A rolling 30 day window turned the ranking on
+      // whichever month happened to have just passed, so one bad fortnight
+      // could sink an officer who had attended reliably all year.
+      const windowStart = `${new Date().getFullYear()}-01-01`;
 
       // Field officers work away from the building and are not expected to
       // scan, and executives are not ranked against their own staff. The old
@@ -2070,7 +2071,7 @@ async function startServer() {
         .where(function () {
           this.whereNull('is_field_officer').orWhere('is_field_officer', false);
         })
-        .select('id', 'name', 'post', 'profile_pic');
+        .select('id', 'name', 'post', 'profile_pic', 'join_date');
 
       // Executives are identified by their post. Slot assignment is not a
       // reliable signal - officers get put in a display slot temporarily - and
@@ -2091,17 +2092,23 @@ async function startServer() {
         .whereBetween('date', [windowStart, windowEnd])
         .select('officer_id', 'date', 'status', 'time_in');
 
-      // Working days in the window, shared by everyone.
-      let workingDays = 0;
-      {
-        const cursor = new Date(`${windowStart}T00:00:00`);
-        const stop = new Date(`${windowEnd}T00:00:00`);
+      // Working days between two dates, used per officer so that someone who
+      // joined part way through the year is measured against the days they
+      // were actually here rather than the whole year.
+      const workingDaysBetween = (fromKey: string, toKey: string) => {
+        if (toKey < fromKey) return 0;
+        let n = 0;
+        const cursor = new Date(`${fromKey}T00:00:00`);
+        const stop = new Date(`${toKey}T00:00:00`);
         while (cursor <= stop) {
-          if (calendar.isWorkingDay(toDateKey(cursor))) workingDays++;
+          if (calendar.isWorkingDay(toDateKey(cursor))) n++;
           cursor.setDate(cursor.getDate() + 1);
         }
-      }
-      if (workingDays === 0) {
+        return n;
+      };
+
+      const windowWorkingDays = workingDaysBetween(windowStart, windowEnd);
+      if (windowWorkingDays === 0) {
         return res.json({ status: 'success', data: [] });
       }
 
@@ -2115,6 +2122,9 @@ async function startServer() {
 
       const standings = officers.map((officer: any) => {
         const mine = byOfficer.get(String(officer.id)) || [];
+        const joinKey = officer.join_date ? toDateKey(officer.join_date) : null;
+        const officerStart = joinKey && joinKey > windowStart ? joinKey : windowStart;
+        const workingDays = workingDaysBetween(officerStart, windowEnd);
         let credited = 0;
         let onTime = 0;
         let arrivalTotal = 0;
@@ -2150,8 +2160,8 @@ async function startServer() {
           name: officer.name,
           post: officer.post,
           avatar: officer.profile_pic,
-          // Percentage of available working days attended.
-          score: Math.round((credited / workingDays) * 100),
+          // Percentage of the working days available to this officer.
+          score: workingDays > 0 ? Math.round((credited / workingDays) * 100) : 0,
           attended_days: credited,
           working_days: workingDays,
           days_with_data: mine.length,
@@ -2163,7 +2173,7 @@ async function startServer() {
       const ordered = standings
         // An officer with almost no records would otherwise top the board on a
         // single perfect day.
-        .filter((s) => s.days_with_data >= MIN_DAYS_WITH_DATA)
+        .filter((s) => s.days_with_data >= MIN_DAYS_WITH_DATA && s.working_days >= MIN_WORKING_DAYS)
         .sort((a, b) =>
           b.score - a.score ||
           b.on_time_rate - a.on_time_rate ||
@@ -2190,6 +2200,7 @@ async function startServer() {
           reason: !inPool ? 'NOT_RANKED' : 'NOT_ENOUGH_DATA',
           days_with_data: belowMinimum?.days_with_data ?? 0,
           minimum_days: MIN_DAYS_WITH_DATA,
+          minimum_working_days: MIN_WORKING_DAYS,
         };
       }
 
@@ -2197,7 +2208,7 @@ async function startServer() {
         status: 'success',
         data: ranked,
         me,
-        meta: { from: windowStart, to: windowEnd, working_days: workingDays, total_ranked: ordered.length },
+        meta: { from: windowStart, to: windowEnd, working_days: windowWorkingDays, total_ranked: ordered.length },
       });
     } catch (error: any) {
       console.error('[Leaderboard] Failed:', error.message);

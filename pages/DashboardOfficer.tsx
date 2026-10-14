@@ -46,7 +46,7 @@ const AttendanceLeaderboard: React.FC<{ lang: 'EN' | 'SI' }> = ({ lang }) => {
        <div className="absolute top-0 right-0 p-8 opacity-10 group-hover:rotate-45 transition-transform duration-700 text-6xl">🏆</div>
        <div className="relative z-10">
           <h3 className="text-2xl font-black tracking-tight">Leaderboard</h3>
-          <p className="text-[9px] font-black text-blue-400 uppercase tracking-widest mt-1">Attendance rate &middot; last 30 days</p>
+          <p className="text-[9px] font-black text-blue-400 uppercase tracking-widest mt-1">Attendance rate &middot; year to date</p>
        </div>
 
        <div className="space-y-4 max-h-[420px] overflow-y-auto no-scrollbar">

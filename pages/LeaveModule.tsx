@@ -177,7 +177,7 @@ const LeaveModule: React.FC<Props> = ({ user, lang }) => {
               : standing?.reason === 'NOT_ENOUGH_DATA' ? '--' : 'n/a',
             color: 'text-violet-500',
             sub: standing?.eligible
-              ? `of ${standing.total_ranked} · ${standing.score}% attendance`
+              ? `of ${standing.total_ranked} · ${standing.score}% this year`
               : standing?.reason === 'NOT_ENOUGH_DATA'
                 ? `Needs ${standing.minimum_days} days of scans`
                 : t('ශ්‍රේණිගත නොකෙරේ', 'Not ranked'),
