@@ -2040,7 +2040,7 @@ async function startServer() {
    * It is now the share of that officer's available working days on which they
    * were present, with punctuality breaking ties.
    */
-  apiRouter.get('/attendance/leaderboard', authenticate, async (req, res) => {
+  apiRouter.get('/attendance/leaderboard', authenticate, async (req: any, res) => {
     try {
       const MIN_DAYS_WITH_DATA = 5;   // guards against a 1-of-1 day scoring 100%
       const WINDOW_DAYS = 30;
@@ -2160,7 +2160,7 @@ async function startServer() {
         };
       });
 
-      const ranked = standings
+      const ordered = standings
         // An officer with almost no records would otherwise top the board on a
         // single perfect day.
         .filter((s) => s.days_with_data >= MIN_DAYS_WITH_DATA)
@@ -2170,13 +2170,34 @@ async function startServer() {
           (a.avg_arrival_mins ?? 9999) - (b.avg_arrival_mins ?? 9999) ||
           String(a.name).localeCompare(String(b.name)),
         )
-        .slice(0, 10)
         .map((s, i) => ({ ...s, rank: i + 1, points: s.score }));
+
+      const ranked = ordered.slice(0, 10);
+
+      // The caller's own standing, so an officer can see where they sit without
+      // having to be in the top ten.
+      const mine = ordered.find((s) => String(s.officer_id) === String(req.user.id));
+      let me: any;
+      if (mine) {
+        me = { ...mine, eligible: true, total_ranked: ordered.length };
+      } else {
+        // Say why rather than just showing nothing.
+        const inPool = officers.some((o: any) => String(o.id) === String(req.user.id));
+        const belowMinimum = standings.find((s) => String(s.officer_id) === String(req.user.id));
+        me = {
+          eligible: false,
+          total_ranked: ordered.length,
+          reason: !inPool ? 'NOT_RANKED' : 'NOT_ENOUGH_DATA',
+          days_with_data: belowMinimum?.days_with_data ?? 0,
+          minimum_days: MIN_DAYS_WITH_DATA,
+        };
+      }
 
       res.json({
         status: 'success',
         data: ranked,
-        meta: { from: windowStart, to: windowEnd, working_days: workingDays },
+        me,
+        meta: { from: windowStart, to: windowEnd, working_days: workingDays, total_ranked: ordered.length },
       });
     } catch (error: any) {
       console.error('[Leaderboard] Failed:', error.message);

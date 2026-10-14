@@ -16,6 +16,7 @@ const LeaveModule: React.FC<Props> = ({ user, lang }) => {
 
   const [leaves, setLeaves] = useState<LeaveRequest[]>([]);
   const [balances, setBalances] = useState<any>(null);
+  const [standing, setStanding] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -54,12 +55,16 @@ const LeaveModule: React.FC<Props> = ({ user, lang }) => {
   const loadData = async () => {
     setIsLoading(true);
     try {
-      const [leavesData, balancesData] = await Promise.all([
+      // Settled, so a leaderboard hiccup cannot blank the balances.
+      const [leavesRes, balancesRes, standingRes] = await Promise.allSettled([
         api.getMyLeaves(),
-        api.getLeaveBalances()
+        api.getLeaveBalances(),
+        api.getMyAttendanceStanding(),
       ]);
-      setLeaves(leavesData);
-      setBalances(balancesData);
+      if (leavesRes.status === 'fulfilled') setLeaves(leavesRes.value);
+      if (balancesRes.status === 'fulfilled') setBalances(balancesRes.value);
+      setStanding(standingRes.status === 'fulfilled' ? standingRes.value.me : null);
+      if (balancesRes.status === 'rejected') throw balancesRes.reason;
     } catch (e) {
       console.error(e);
     } finally {
@@ -131,7 +136,7 @@ const LeaveModule: React.FC<Props> = ({ user, lang }) => {
         </button>
       </div>
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 sm:gap-6">
         {[
           {
             label: t('අනියම් නිවාඩු', 'Casual Leave'),
@@ -162,9 +167,24 @@ const LeaveModule: React.FC<Props> = ({ user, lang }) => {
             val: balances ? `${balances.absent_days ?? 0}` : '--',
             color: 'text-rose-500',
             sub: balances?.counted_up_to ? `No scan up to ${balances.counted_up_to}` : 'Working days with no scan',
+          },
+          {
+            // Where this officer sits on the attendance board, which otherwise
+            // only shows the top ten.
+            label: t('පැමිණීමේ ශ්‍රේණිය', 'My Attendance Rank'),
+            val: standing?.eligible
+              ? `#${standing.rank}`
+              : standing?.reason === 'NOT_ENOUGH_DATA' ? '--' : 'n/a',
+            color: 'text-violet-500',
+            sub: standing?.eligible
+              ? `of ${standing.total_ranked} · ${standing.score}% attendance`
+              : standing?.reason === 'NOT_ENOUGH_DATA'
+                ? `Needs ${standing.minimum_days} days of scans`
+                : t('ශ්‍රේණිගත නොකෙරේ', 'Not ranked'),
+            wide: true,
           }
         ].map((stat, i) => (
-          <div key={i} className="bg-white p-5 sm:p-7 rounded-[2rem] sm:rounded-[2.5rem] shadow-sm border border-slate-100">
+          <div key={i} className={`bg-white p-5 sm:p-7 rounded-[2rem] sm:rounded-[2.5rem] shadow-sm border border-slate-100 ${(stat as any).wide ? 'col-span-2 lg:col-span-1' : ''}`}>
              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{stat.label}</p>
              <h3 className={`text-3xl font-black mt-4 tracking-tighter ${stat.color}`}>{stat.val}</h3>
              <p className="text-[9px] text-slate-300 font-bold uppercase mt-2">

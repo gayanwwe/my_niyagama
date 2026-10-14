@@ -208,6 +208,23 @@ export class ApiClient {
   async getMonthlyAttendanceRegistry(year: number, month: number) { return this.request<any>(`/attendance/monthly-registry?year=${year}&month=${month}`); }
   async getOfficerAttendance(officerId: string | number, year: number, month: number) { return this.request<any>(`/attendance/officer/${officerId}?year=${year}&month=${month}`); }
   async getAttendanceLeaderboard() { return this.request<LeaderboardEntry[]>('/attendance/leaderboard'); }
+
+  /**
+   * The same endpoint, but returning the whole envelope. request() unwraps
+   * `data`, which would drop the caller's own standing in `me`.
+   */
+  async getMyAttendanceStanding() {
+    const token = localStorage.getItem('niyagama_token');
+    const response = await fetch(`${BASE_URL}/attendance/leaderboard`, {
+      headers: {
+        'Accept': 'application/json',
+        ...(token ? { 'Authorization': `Bearer ${token}`, 'X-Authorization': `Bearer ${token}` } : {}),
+      },
+    });
+    if (!response.ok) throw new Error(`Could not load attendance standing (HTTP ${response.status})`);
+    const result = await response.json();
+    return { me: result.me, meta: result.meta, leaders: result.data || [] };
+  }
   async checkIn(time: string, isTemporary: boolean = false) { return this.request<any>('/attendance/check-in', { method: 'POST', body: JSON.stringify({ time, isTemporary }) }); }
   async importBiometricLogs(logs: any[]) { return this.request<any>('/attendance/import', { method: 'POST', body: JSON.stringify({ logs }) }); }
   async syncBiometricsToAvailability() { return this.request<any>('/presence/sync-biometrics', { method: 'POST' }); }
