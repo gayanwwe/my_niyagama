@@ -4369,15 +4369,20 @@ async function startServer() {
       const today = new Date();
       const month = (today.getMonth() + 1).toString().padStart(2, '0');
       const day = today.getDate().toString().padStart(2, '0');
-      // Assuming we might have a dob column or we can use biometric_id as a hint? 
-      // Actually, let's just mock birthdays for now or look for a dob column.
-      // I'll check if dob column exists.
-      const hasDob = await db.schema.hasColumn('officers', 'dob');
-      let birthdays = [];
-      if (hasDob) {
-        birthdays = await db('officers')
-          .whereRaw("strftime('%m-%d', dob) = ?", [`${month}-${day}`])
-          .select('id', 'name', 'post');
+      // Two faults kept this permanently empty, so no officer's birthday ever
+      // appeared: the column is `birthday`, not `dob`, so the existence check
+      // always failed; and the query used strftime, which is SQLite only and
+      // errors on MySQL, so it could not have worked even had the name matched.
+      let birthdays: any[] = [];
+      try {
+        if (await db.schema.hasColumn('officers', 'birthday')) {
+          birthdays = await db('officers')
+            .whereNotNull('birthday')
+            .whereRaw("DATE_FORMAT(birthday, '%m-%d') = ?", [`${month}-${day}`])
+            .select('id', 'name', 'post', 'profile_pic');
+        }
+      } catch (err: any) {
+        console.error('[PublicDashboard] Birthday lookup failed:', err.message);
       }
 
       res.json({ 

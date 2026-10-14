@@ -220,7 +220,7 @@ const DashboardOfficer: React.FC<Props> = ({ user, lang }) => {
         api.getAttendance(),
         api.getMyLeaves(),
         api.getLeaveBalances().catch(() => null),
-        api.getPublicDashboardData().catch(() => ({ status: 'error', data: { events: [], birthdays: [] } }))
+        api.getPublicDashboardData().catch(() => null)
       ]);
       setSettings(settingsData);
       if (attData) setAttendance(attData);
@@ -240,13 +240,15 @@ const DashboardOfficer: React.FC<Props> = ({ user, lang }) => {
         shortLeaveTotal: b.short_leave_total ?? 2,
       });
 
-      if (publicDashboardResult && publicDashboardResult.status === 'success') {
-        const d = publicDashboardResult.data || {};
-        setPublicData({
-          events: d.events || [],
-          birthdays: d.birthdays || []
-        });
-      }
+      // getPublicDashboardData returns the payload itself - the API helper
+      // already unwraps `data` - so testing .status === 'success' never passed
+      // and this never ran. The birthday billboard and the events strip have
+      // been empty since they were written, whatever the server returned.
+      const pd: any = publicDashboardResult || {};
+      setPublicData({
+        events: pd.events || [],
+        birthdays: pd.birthdays || [],
+      });
     } catch (e) {
       console.error("Dashboard data load failed:", e);
     }
