@@ -25,7 +25,7 @@ const LeaveModule: React.FC<Props> = ({ user, lang }) => {
   const [view, setView] = useState<'LEAVES' | 'ATTENDANCE'>('LEAVES');
 
   const [form, setForm] = useState({
-    type: 'CASUAL' as 'CASUAL' | 'SICK' | 'VACATION' | 'DUTY' | 'SHORT_LEAVE' | 'HALF_DAY',
+    type: 'CASUAL' as 'CASUAL' | 'VACATION' | 'DUTY' | 'SHORT_LEAVE' | 'HALF_DAY',
     sub_type: 'AM' as 'AM' | 'PM',
     start_date: new Date().toISOString().split('T')[0],
     end_date: new Date().toISOString().split('T')[0],
@@ -34,7 +34,7 @@ const LeaveModule: React.FC<Props> = ({ user, lang }) => {
 
   // Zod schema for leave form validation
   const leaveFormSchema = z.object({
-    type: z.enum(['CASUAL', 'SICK', 'VACATION', 'DUTY', 'SHORT_LEAVE', 'HALF_DAY']),
+    type: z.enum(['CASUAL', 'VACATION', 'DUTY', 'SHORT_LEAVE', 'HALF_DAY']),
     sub_type: z.enum(['AM', 'PM']).default('AM'),
     start_date: z.string().date(),
     end_date: z.string().date(),
@@ -133,9 +133,27 @@ const LeaveModule: React.FC<Props> = ({ user, lang }) => {
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         {[
-          { label: 'Casual Leave', val: balances ? `${balances.casual}/${balances.casual_total}` : '--/--', color: 'text-blue-500', sub: balances ? `${balances.short_leave_count} SL / ${balances.half_day_count} HD Used` : null },
-          { label: 'Sick Leave', val: balances ? `${balances.sick}/${balances.sick_total}` : '--/--', color: 'text-emerald-500' },
-          { label: 'Vacation', val: balances ? `${balances.vacation}/${balances.vacation_total}` : '--/--', color: 'text-amber-500' }
+          {
+            label: t('අනියම් නිවාඩු', 'Casual Leave'),
+            val: balances ? `${balances.casual}/${balances.casual_total}` : '--/--',
+            color: 'text-blue-500',
+            sub: balances ? `${balances.short_leave_count} SL / ${balances.half_day_count} HD used` : null,
+          },
+          {
+            // Sick leave is not a method here, and the tile showed an
+            // entitlement nobody could draw on. Days with no biometric record
+            // are what actually consume the allowance, so that is shown instead.
+            label: t('නොපැමිණි දින', 'Days Absent'),
+            val: balances ? `${balances.absent_days ?? 0}` : '--',
+            color: 'text-rose-500',
+            sub: balances?.counted_up_to ? `No scan up to ${balances.counted_up_to}` : 'Working days with no scan',
+          },
+          {
+            label: t('වාර්ෂික නිවාඩු', 'Vacation'),
+            val: balances ? `${balances.vacation}/${balances.vacation_total}` : '--/--',
+            color: 'text-amber-500',
+            sub: balances?.vacation_from_casual ? `${balances.vacation_from_casual} carried from casual` : null,
+          }
         ].map((stat, i) => (
           <div key={i} className="bg-white p-8 rounded-[2.5rem] shadow-sm border border-slate-100">
              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{stat.label}</p>
@@ -146,6 +164,20 @@ const LeaveModule: React.FC<Props> = ({ user, lang }) => {
           </div>
         ))}
       </div>
+
+      {balances?.no_pay > 0 && (
+        <div className="bg-red-50 border border-red-100 rounded-[2rem] p-5 flex items-center gap-4">
+          <div className="w-10 h-10 rounded-2xl bg-red-500 text-white flex items-center justify-center flex-none font-black">!</div>
+          <div>
+            <p className="text-[11px] font-black uppercase tracking-widest text-red-600">
+              {t('වැටුප් රහිත දින', 'No-pay days')}: {balances.no_pay}
+            </p>
+            <p className="text-[10px] font-bold text-slate-500 mt-0.5">
+              {t('අනියම් සහ වාර්ෂික නිවාඩු දෙකම අවසන්', 'Both casual and vacation allowances are fully used')}
+            </p>
+          </div>
+        </div>
+      )}
 
       <div className="flex gap-2 bg-white p-2 rounded-[1.5rem] shadow-sm border border-slate-100 w-full sm:w-auto sm:inline-flex">
         {([
@@ -259,7 +291,6 @@ const LeaveModule: React.FC<Props> = ({ user, lang }) => {
                      className="w-full p-4 bg-slate-50 rounded-2xl font-bold border-none outline-none focus:ring-2 focus:ring-[#1877F2]/20"
                     >
                       <option value="CASUAL">Casual Leave</option>
-                      <option value="SICK">Sick Leave</option>
                       <option value="VACATION">Vacation / Annual</option>
                       <option value="DUTY">Official Duty (Field/Training)</option>
                       <option value="SHORT_LEAVE">Short Leave (90 Min)</option>

@@ -2990,6 +2990,29 @@ async function startServer() {
     balances.casual += Math.floor(balances.short_leave_count / 2);
     balances.casual += balances.half_day_count;
 
+    // --- Overflow casual into vacation ---
+    // Casual used to be reported raw, so an officer who had consumed more than
+    // their entitlement read "40.5 / 21", which is not a balance. Once the
+    // casual allowance is spent the remainder comes out of vacation, and only
+    // what exceeds both is unpaid.
+    const casualConsumed = balances.casual;
+    (balances as any).casual_consumed = casualConsumed;
+
+    balances.casual = Math.min(casualConsumed, balances.casual_total);
+    const overflow = Math.max(0, casualConsumed - balances.casual_total);
+
+    balances.vacation += overflow;
+    (balances as any).vacation_from_casual = overflow;
+
+    const beyondVacation = Math.max(0, balances.vacation - balances.vacation_total);
+    balances.vacation = Math.min(balances.vacation, balances.vacation_total);
+    (balances as any).no_pay = beyondVacation;
+
+    // Casual and vacation are one pool once they cascade, so the figure that
+    // actually matters is the combined one.
+    (balances as any).combined_used = balances.casual + balances.vacation + beyondVacation;
+    (balances as any).combined_total = balances.casual_total + balances.vacation_total;
+
     return balances;
   };
 
@@ -3022,7 +3045,9 @@ async function startServer() {
     try {
       const { type, sub_type, start_date, end_date, reason } = req.body || {};
 
-      const VALID_TYPES = ['CASUAL', 'SICK', 'VACATION', 'DUTY', 'SHORT_LEAVE', 'HALF_DAY'];
+      // SICK is not a leave method in this division; it was only ever a
+      // placeholder with no entitlement behind it.
+      const VALID_TYPES = ['CASUAL', 'VACATION', 'DUTY', 'SHORT_LEAVE', 'HALF_DAY'];
       if (!VALID_TYPES.includes(type)) {
         return res.status(400).json({ status: 'error', message: `Invalid leave type. Expected one of: ${VALID_TYPES.join(', ')}` });
       }
@@ -3052,12 +3077,18 @@ async function startServer() {
       const balances = await computeLeaveBalances(req.user.id);
       const cost = leaveRequestCost(type, start_date, end_date, calendar);
 
+      // Casual and vacation cascade into one another, so a request is checked
+      // against the combined pool rather than one half of it. Checking casual
+      // alone would refuse every request the moment the casual allowance filled,
+      // even with vacation days still untouched.
+      const combinedUsed = (balances as any).combined_used ?? balances.casual + balances.vacation;
+      const combinedTotal = (balances as any).combined_total ?? balances.casual_total + balances.vacation_total;
+
       const bucket: Record<string, { used: number; total: number; label: string }> = {
-        CASUAL: { used: balances.casual, total: balances.casual_total, label: 'casual' },
-        SICK: { used: balances.sick, total: balances.sick_total, label: 'sick' },
-        VACATION: { used: balances.vacation, total: balances.vacation_total, label: 'vacation' },
-        // A half day is charged against casual leave.
-        HALF_DAY: { used: balances.casual, total: balances.casual_total, label: 'casual' },
+        CASUAL: { used: combinedUsed, total: combinedTotal, label: 'casual and vacation' },
+        VACATION: { used: combinedUsed, total: combinedTotal, label: 'casual and vacation' },
+        // A half day is charged against the same pool.
+        HALF_DAY: { used: combinedUsed, total: combinedTotal, label: 'casual and vacation' },
       };
 
       const applicable = bucket[type];

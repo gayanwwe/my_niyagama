@@ -188,7 +188,7 @@ const DashboardOfficer: React.FC<Props> = ({ user, lang }) => {
     status: 'PRESENT'
   });
 
-  const [leaveStats, setLeaveStats] = useState({ taken: 0, remaining: 42 });
+  const [leaveStats, setLeaveStats] = useState({ taken: 0, total: 42 });
   const [activeModal, setActiveModal] = useState<'CHECKIN' | 'UNAVAILABILITY' | 'STATUS' | null>(null);
   const [checkInTime, setCheckInTime] = useState('');
   const [timeLeftStr, setTimeLeftStr] = useState<string | null>(null);
@@ -217,15 +217,20 @@ const DashboardOfficer: React.FC<Props> = ({ user, lang }) => {
         api.getDivisionalSettings(),
         api.getAttendance(),
         api.getMyLeaves(),
-        api.getLeaveBalances().catch(() => ({ data: { casual: 0, sick: 0, vacation: 0, casual_total: 21, sick_total: 7, vacation_total: 21, short_leave_count: 0, half_day_count: 0 } })),
+        api.getLeaveBalances().catch(() => null),
         api.getPublicDashboardData().catch(() => ({ status: 'error', data: { events: [], birthdays: [] } }))
       ]);
       setSettings(settingsData);
       if (attData) setAttendance(attData);
       
-      const balancesRes = balancesData.data || { casual: 0, sick: 0, vacation: 0, casual_total: 21, sick_total: 7, vacation_total: 21, short_leave_count: 0, half_day_count: 0 };
-      const taken = balancesRes.casual + balancesRes.sick + balancesRes.vacation;
-      setLeaveStats({ taken, remaining: (balancesRes.casual_total || 21) - balancesRes.casual });
+      // api.request() already unwraps `data`, so reading balancesData.data gave
+      // undefined and this tile silently fell back to zeros.
+      const b: any = balancesData || {};
+      // Casual and vacation cascade into one another, so the tile shows the
+      // combined pool rather than casual alone.
+      const taken = b.combined_used ?? ((b.casual || 0) + (b.vacation || 0));
+      const total = b.combined_total ?? ((b.casual_total || 21) + (b.vacation_total || 21));
+      setLeaveStats({ taken, total });
 
       if (publicDashboardResult && publicDashboardResult.status === 'success') {
         const d = publicDashboardResult.data || {};
@@ -472,8 +477,8 @@ const DashboardOfficer: React.FC<Props> = ({ user, lang }) => {
           <div className="snap-center">
             <StatCard 
               label={t('myLeave')} 
-              value={`${leaveStats.taken}/${leaveStats.remaining + leaveStats.taken}`} 
-              sub={`${t('leavesTaken')}: ${leaveStats.taken} | ${t('leavesRemaining')}: ${leaveStats.remaining}`} 
+              value={`${leaveStats.taken}/${leaveStats.total}`} 
+              sub={`${t('leavesTaken')}: ${leaveStats.taken} | ${t('leavesRemaining')}: ${Math.max(0, leaveStats.total - leaveStats.taken)}`} 
               color="text-indigo-600" 
               icon="🏖️" 
               onClick={() => navigate('/leave')}
