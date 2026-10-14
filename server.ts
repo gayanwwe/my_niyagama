@@ -2015,29 +2015,159 @@ async function startServer() {
       res.status(500).json({ status: 'error', message: error.message });
     }
   });
+  /**
+   * Attendance reliability over the last 30 days.
+   *
+   * This was a raw count of PRESENT rows, which measured who had the most scan
+   * records rather than who attended most reliably: an officer with patchy
+   * biometric enrolment could never place however faithfully they came in, and
+   * the card's own "Consistent" badge tested score > 90 against a number that
+   * could not exceed about 12.
+   *
+   * It is now the share of that officer's available working days on which they
+   * were present, with punctuality breaking ties.
+   */
   apiRouter.get('/attendance/leaderboard', authenticate, async (req, res) => {
     try {
-      // Calculate score based on attendance count in the last 30 days
-      const thirtyDaysAgo = new Date();
-      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-      const startDate = thirtyDaysAgo.toLocaleDateString('en-CA');
+      const MIN_DAYS_WITH_DATA = 5;   // guards against a 1-of-1 day scoring 100%
+      const WINDOW_DAYS = 30;
 
-      const leaderboard = await db('attendance')
-        .join('officers', 'attendance.officer_id', 'officers.id')
-        .where('attendance.date', '>=', startDate)
-        .where('attendance.status', 'PRESENT')
-        .whereNotIn('officers.post', ['Administrative Officer', 'Grama Niladari', 'Field Officer'])
-        .select('officers.id as officer_id', 'officers.name', 'officers.post', 'officers.profile_pic as avatar')
-        .count('attendance.id as score')
-        .groupBy('officers.id', 'officers.name', 'officers.post', 'officers.profile_pic')
-        .orderBy('score', 'desc')
-        .limit(10);
+      const calendar = await loadLeaveCalendar();
+      const horizon = await getAttendanceHorizon();
 
-      res.json({ status: 'success', data: leaderboard });
+      const today = new Date().toLocaleDateString('en-CA');
+      // Never score past the last day the division has biometric data for,
+      // otherwise un-imported days read as everyone failing to attend.
+      const windowEnd = horizon && horizon < today ? horizon : today;
+      const from = new Date(`${windowEnd}T00:00:00`);
+      from.setDate(from.getDate() - WINDOW_DAYS);
+      const windowStart = toDateKey(from);
+
+      // Field officers work away from the building and are not expected to
+      // scan, and executives are not ranked against their own staff. The old
+      // filter listed three job titles that match no officer in this division -
+      // its intent was to exclude field staff, who are flagged by work_type.
+      const EXCLUDED_ROLES = ['EXECUTIVE', 'EX'];
+
+      // Role alone does not identify this division's executives: the officers
+      // holding the Divisional Secretary, Assistant DS and Accountant posts are
+      // all recorded as OFFICER. The slot assignments the public display is
+      // driven from are the real source, so anyone filling one is excluded too.
+      const slotHolders = await db('dashboard_status').whereNotNull('officer_id').pluck('officer_id');
+
+      const officers = await db('officers')
+        .whereNotIn('role', EXCLUDED_ROLES)
+        .modify((q: any) => { if (slotHolders.length) q.whereNotIn('id', slotHolders); })
+        .where(function () {
+          this.whereNull('work_type').orWhereNot('work_type', 'FIELD');
+        })
+        .where(function () {
+          this.whereNull('is_field_officer').orWhere('is_field_officer', false);
+        })
+        .select('id', 'name', 'post', 'profile_pic');
+
+      if (officers.length === 0) {
+        return res.json({ status: 'success', data: [] });
+      }
+
+      const rows = await db('attendance')
+        .whereIn('officer_id', officers.map((o: any) => o.id))
+        .whereBetween('date', [windowStart, windowEnd])
+        .select('officer_id', 'date', 'status', 'time_in');
+
+      // Working days in the window, shared by everyone.
+      let workingDays = 0;
+      {
+        const cursor = new Date(`${windowStart}T00:00:00`);
+        const stop = new Date(`${windowEnd}T00:00:00`);
+        while (cursor <= stop) {
+          if (calendar.isWorkingDay(toDateKey(cursor))) workingDays++;
+          cursor.setDate(cursor.getDate() + 1);
+        }
+      }
+      if (workingDays === 0) {
+        return res.json({ status: 'success', data: [] });
+      }
+
+      const startMins = timeToMins(ATTENDANCE_RULES.STANDARD.START);
+      const byOfficer = new Map<string, any[]>();
+      for (const r of rows) {
+        const key = String(r.officer_id);
+        if (!byOfficer.has(key)) byOfficer.set(key, []);
+        byOfficer.get(key)!.push(r);
+      }
+
+      const standings = officers.map((officer: any) => {
+        const mine = byOfficer.get(String(officer.id)) || [];
+        let credited = 0;
+        let onTime = 0;
+        let arrivalTotal = 0;
+        let arrivals = 0;
+
+        for (const row of mine) {
+          if (!calendar.isWorkingDay(toDateKey(row.date))) continue;
+          switch (row.status) {
+            // All of these mean the officer worked that day. MISSING_PUNCH is
+            // a device fault, not an absence, and must not be penalised.
+            case 'PRESENT':
+            case 'FIELD':
+            case 'MISSING_PUNCH':
+            case 'SHORT_LEAVE':
+              credited += 1;
+              break;
+            case 'HALF_DAY':
+              credited += 0.5;
+              break;
+            default:
+              continue;
+          }
+          const mins = row.time_in ? timeToMins(String(row.time_in)) : NaN;
+          if (Number.isFinite(mins) && mins > 0) {
+            arrivals++;
+            arrivalTotal += mins;
+            if (mins <= startMins) onTime++;
+          }
+        }
+
+        return {
+          officer_id: officer.id,
+          name: officer.name,
+          post: officer.post,
+          avatar: officer.profile_pic,
+          // Percentage of available working days attended.
+          score: Math.round((credited / workingDays) * 100),
+          attended_days: credited,
+          working_days: workingDays,
+          days_with_data: mine.length,
+          on_time_rate: arrivals ? Math.round((onTime / arrivals) * 100) : 0,
+          avg_arrival_mins: arrivals ? Math.round(arrivalTotal / arrivals) : null,
+        };
+      });
+
+      const ranked = standings
+        // An officer with almost no records would otherwise top the board on a
+        // single perfect day.
+        .filter((s) => s.days_with_data >= MIN_DAYS_WITH_DATA)
+        .sort((a, b) =>
+          b.score - a.score ||
+          b.on_time_rate - a.on_time_rate ||
+          (a.avg_arrival_mins ?? 9999) - (b.avg_arrival_mins ?? 9999) ||
+          String(a.name).localeCompare(String(b.name)),
+        )
+        .slice(0, 10)
+        .map((s, i) => ({ ...s, rank: i + 1, points: s.score }));
+
+      res.json({
+        status: 'success',
+        data: ranked,
+        meta: { from: windowStart, to: windowEnd, working_days: workingDays },
+      });
     } catch (error: any) {
+      console.error('[Leaderboard] Failed:', error.message);
       res.status(500).json({ status: 'error', message: error.message });
     }
   });
+
   apiRouter.post('/attendance/check-in', authenticate, async (req: any, res) => {
     try {
       const { time, isTemporary, date: dateParam } = req.body;

@@ -46,7 +46,7 @@ const AttendanceLeaderboard: React.FC<{ lang: 'EN' | 'SI' }> = ({ lang }) => {
        <div className="absolute top-0 right-0 p-8 opacity-10 group-hover:rotate-45 transition-transform duration-700 text-6xl">🏆</div>
        <div className="relative z-10">
           <h3 className="text-2xl font-black tracking-tight">Leaderboard</h3>
-          <p className="text-[9px] font-black text-blue-400 uppercase tracking-widest mt-1">Yearly Reliability Pulse</p>
+          <p className="text-[9px] font-black text-blue-400 uppercase tracking-widest mt-1">Attendance rate &middot; last 30 days</p>
        </div>
 
        <div className="space-y-4 max-h-[420px] overflow-y-auto no-scrollbar">
@@ -74,9 +74,11 @@ const AttendanceLeaderboard: React.FC<{ lang: 'EN' | 'SI' }> = ({ lang }) => {
                       </div>
                    )}
                 </div>
-                <div className="text-right">
-                   <p className="text-xs font-black text-blue-400 tabular-nums">{l.score}</p>
-                   <p className="text-[7px] font-black text-slate-600 uppercase">Points</p>
+                <div className="text-right flex-none">
+                   <p className="text-xs font-black text-blue-400 tabular-nums">{l.score}%</p>
+                   <p className="text-[7px] font-black text-slate-600 uppercase tabular-nums">
+                      {(l as any).on_time_rate ?? 0}% on time
+                   </p>
                 </div>
              </div>
           ))}
