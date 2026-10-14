@@ -224,6 +224,19 @@ async function startServer() {
   // to a public government display or mark the Divisional Secretary as out.
   const DISPLAY_MANAGER_ROLES = ['SA', 'ADMIN', 'IT', 'OPERATOR'];
 
+  // Posts whose holders are not ranked on the staff attendance leaderboard.
+  // Edit this list if the division adds or renames a senior designation.
+  const EXECUTIVE_POSTS = [
+    'divisional secretary',      // also catches "Assistant Divisional Secretary"
+    'div. secretary',            // the abbreviated form used on the public display
+    'div secretary',
+    'accountant',
+    'administrative officer',
+    'director of planning',      // also catches "Ass. Director of Planning"
+    'grama niladari',
+    'chief clerk',
+  ];
+
   const DEFAULT_NON_WORKING_WEEKDAYS = [0, 6];
 
   /**
@@ -2049,15 +2062,8 @@ async function startServer() {
       // its intent was to exclude field staff, who are flagged by work_type.
       const EXCLUDED_ROLES = ['EXECUTIVE', 'EX'];
 
-      // Role alone does not identify this division's executives: the officers
-      // holding the Divisional Secretary, Assistant DS and Accountant posts are
-      // all recorded as OFFICER. The slot assignments the public display is
-      // driven from are the real source, so anyone filling one is excluded too.
-      const slotHolders = await db('dashboard_status').whereNotNull('officer_id').pluck('officer_id');
-
-      const officers = await db('officers')
+      const candidates = await db('officers')
         .whereNotIn('role', EXCLUDED_ROLES)
-        .modify((q: any) => { if (slotHolders.length) q.whereNotIn('id', slotHolders); })
         .where(function () {
           this.whereNull('work_type').orWhereNot('work_type', 'FIELD');
         })
@@ -2065,6 +2071,16 @@ async function startServer() {
           this.whereNull('is_field_officer').orWhere('is_field_officer', false);
         })
         .select('id', 'name', 'post', 'profile_pic');
+
+      // Executives are identified by their post. Slot assignment is not a
+      // reliable signal - officers get put in a display slot temporarily - and
+      // role is not either, so the designation is what counts. Matched as a
+      // substring and case-insensitively, to tolerate the spelling variants
+      // these titles are recorded with.
+      const officers = candidates.filter((o: any) => {
+        const post = String(o.post || '').toLowerCase();
+        return !EXECUTIVE_POSTS.some((keyword) => post.includes(keyword));
+      });
 
       if (officers.length === 0) {
         return res.json({ status: 'success', data: [] });
