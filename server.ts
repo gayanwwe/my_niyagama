@@ -2831,13 +2831,32 @@ async function startServer() {
    * approved requests in `leaves`, and days the attendance ledger marks as
    * LEAVE / HALF_DAY / SHORT_LEAVE. A day present in both is counted once.
    */
+  /**
+   * The last date the division actually has biometric data for.
+   *
+   * Absence is inferred from missing scans, so it can only be judged up to the
+   * point the device logs have been imported. Without this bound every officer
+   * accrues leave for days nobody has uploaded yet - counting past it turned
+   * officer 437's 34 absences into 40.
+   */
+  const getAttendanceHorizon = async (): Promise<string | null> => {
+    try {
+      const bio = await db('biometric_logs').max('scan_date as m').first();
+      if (bio?.m) return toDateKey(bio.m);
+      const att = await db('attendance').max('date as m').first();
+      return att?.m ? toDateKey(att.m) : null;
+    } catch {
+      return null;
+    }
+  };
+
   const computeLeaveBalances = async (officerId: any, year: number = new Date().getFullYear()) => {
     const startOfYear = `${year}-01-01`;
     const endOfYear = `${year}-12-31`;
 
     const calendar = await loadLeaveCalendar();
 
-    const [approvedLeaves, attendanceLeaves] = await Promise.all([
+    const [approvedLeaves, attendanceLeaves, attendedDays, officerRow, horizon] = await Promise.all([
       db('leaves')
         .where({ officer_id: officerId, status: 'APPROVED' })
         .where(function () {
@@ -2849,6 +2868,14 @@ async function startServer() {
         .where('officer_id', officerId)
         .whereBetween('date', [startOfYear, endOfYear])
         .whereIn('status', ['LEAVE', 'HALF_DAY', 'SHORT_LEAVE']),
+      // Every day the officer has any attendance record, used to find the days
+      // they have none.
+      db('attendance')
+        .where('officer_id', officerId)
+        .whereBetween('date', [startOfYear, endOfYear])
+        .select('date'),
+      db('officers').where('id', officerId).first('join_date', 'work_type', 'is_field_officer'),
+      getAttendanceHorizon(),
     ]);
 
     const balances = {
@@ -2909,6 +2936,46 @@ async function startServer() {
         shortLeavesPerMonth[monthKey] = (shortLeavesPerMonth[monthKey] || 0) + 1;
       }
     }
+
+    // --- Days with no biometric record at all ---
+    // Leave was only ever counted from filed requests and from attendance rows
+    // explicitly marked LEAVE. An officer who simply did not come in, and filed
+    // nothing, was charged nothing. A working day with no scan is a day not
+    // worked, so it is charged as casual leave.
+    const attendedKeys = new Set(attendedDays.map((a: any) => toDateKey(a.date)));
+    // Never look past the data: no scans have been imported beyond this point,
+    // so absence cannot be inferred there.
+    const absenceLimit = horizon && horizon < endOfYear ? horizon : endOfYear;
+    // Nor before the officer joined.
+    const joinKey = officerRow?.join_date ? toDateKey(officerRow.join_date) : null;
+    const absenceStart = joinKey && joinKey > startOfYear ? joinKey : startOfYear;
+
+    // Field officers work away from the building and are not expected to scan,
+    // so a missing record says nothing about whether they worked. Across the
+    // division only 4 of 55 field officers have biometric coverage above 80%,
+    // against 25 of 43 office staff - inferring absence for them would charge
+    // most of the field staff a hundred days of leave they did not take.
+    const isFieldOfficer =
+      String(officerRow?.work_type || '').toUpperCase() === 'FIELD' || !!officerRow?.is_field_officer;
+
+    let absentDays = 0;
+    if (!isFieldOfficer && absenceLimit >= absenceStart) {
+      const cursor = new Date(`${absenceStart}T00:00:00`);
+      const stop = new Date(`${absenceLimit}T00:00:00`);
+      while (cursor <= stop) {
+        const key = toDateKey(cursor);
+        // Weekends and public holidays are not working days; a day already
+        // charged through an approved request must not be charged twice; and a
+        // day with any attendance record is accounted for by status above.
+        if (calendar.isWorkingDay(key) && !coveredDates.has(key) && !attendedKeys.has(key)) {
+          absentDays += 1;
+        }
+        cursor.setDate(cursor.getDate() + 1);
+      }
+    }
+    balances.casual += absentDays;
+    (balances as any).absent_days = absentDays;
+    (balances as any).counted_up_to = absenceLimit;
 
     // Conversions into casual leave: two short leaves cost one casual day, and
     // the remainder carries across the year rather than being written off each
