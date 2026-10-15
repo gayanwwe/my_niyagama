@@ -38,8 +38,15 @@
   animation: shake 0.2s ease-in-out 0s 2;
 }
 
+/*
+ * No `forwards`: the keyframes end exactly at the element's natural style
+ * (opacity 1, no transform), so retaining them bought nothing and left a
+ * `transform` on the element permanently. A transformed ancestor becomes the
+ * containing block for `position: fixed` descendants, which pushed every modal
+ * inside a faded-in page down the page instead of centring it on screen.
+ */
 .animate-fade-in {
-  animation: fadeIn 0.5s ease-out forwards;
+  animation: fadeIn 0.5s ease-out;
 }
 
 body {
