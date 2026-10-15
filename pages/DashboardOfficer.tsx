@@ -42,41 +42,47 @@ const AttendanceLeaderboard: React.FC<{ lang: 'EN' | 'SI' }> = ({ lang }) => {
   if (loading) return <Skeleton className="h-[400px] w-full rounded-[3.5rem]" />;
 
   return (
-    <div className="bg-slate-900 p-8 rounded-[3.5rem] text-white shadow-2xl space-y-8 relative overflow-hidden group">
-       <div className="absolute top-0 right-0 p-8 opacity-10 group-hover:rotate-45 transition-transform duration-700 text-6xl">🏆</div>
+    <div className="bg-slate-900 p-5 sm:p-8 rounded-[2.5rem] sm:rounded-[3.5rem] text-white shadow-2xl space-y-5 sm:space-y-8 relative overflow-hidden group">
+       <div className="absolute top-0 right-0 p-8 opacity-10 group-hover:rotate-45 transition-transform duration-700 text-6xl pointer-events-none">🏆</div>
        <div className="relative z-10">
-          <h3 className="text-2xl font-black tracking-tight">Leaderboard</h3>
+          <h3 className="text-xl sm:text-2xl font-black tracking-tight">Leaderboard</h3>
           <p className="text-[9px] font-black text-blue-400 uppercase tracking-widest mt-1">Attendance rate &middot; year to date</p>
        </div>
 
-       <div className="space-y-4 max-h-[420px] overflow-y-auto no-scrollbar">
+       <div className="space-y-2.5 sm:space-y-4 max-h-[420px] overflow-y-auto no-scrollbar">
           {leaders.map((l, idx) => (
-             <div key={l.officer_id} className={`flex items-center gap-4 p-4 rounded-3xl transition-all ${idx === 0 ? 'bg-gradient-to-r from-amber-500/20 to-transparent border border-amber-500/20' : 'hover:bg-white/5'}`}>
-                <div className={`w-8 h-8 rounded-xl flex items-center justify-center font-black text-xs ${idx === 0 ? 'bg-amber-500 text-white shadow-[0_0_10px_#f59e0b]' : idx === 1 ? 'bg-slate-400 text-white' : idx === 2 ? 'bg-orange-600 text-white' : 'text-slate-600'}`}>
+             <div key={l.officer_id} className={`flex items-center gap-2.5 sm:gap-4 p-2.5 sm:p-4 rounded-2xl sm:rounded-3xl transition-all ${idx === 0 ? 'bg-gradient-to-r from-amber-500/20 to-transparent border border-amber-500/20' : 'hover:bg-white/5'}`}>
+                <div className={`flex-none w-7 h-7 sm:w-8 sm:h-8 rounded-xl flex items-center justify-center font-black text-xs ${idx === 0 ? 'bg-amber-500 text-white shadow-[0_0_10px_#f59e0b]' : idx === 1 ? 'bg-slate-400 text-white' : idx === 2 ? 'bg-orange-600 text-white' : 'text-slate-600'}`}>
                    {idx + 1}
                 </div>
-                <div className="w-10 h-10 rounded-2xl overflow-hidden border-2 border-white/10">
-                   <img src={l.avatar || `https://ui-avatars.com/api/?name=${l.name}&background=random&color=fff`} className="w-full h-full object-cover" alt="p" />
+                <div className="flex-none w-9 h-9 sm:w-10 sm:h-10 rounded-2xl overflow-hidden border-2 border-white/10">
+                   <img src={l.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(l.name)}&background=random&color=fff`} className="w-full h-full object-cover" alt="" />
                 </div>
+
+                {/* min-w-0 is what lets the name truncate instead of pushing the
+                    score off the edge. The badges sit on the second line: this
+                    card lives in a narrow column at every width, and a chip
+                    beside the name left room for about three characters of it. */}
                 <div className="flex-1 min-w-0">
                    <h5 className="text-xs font-black truncate">{l.name}</h5>
-                   <p className="text-[8px] font-bold text-slate-500 uppercase">{l.post}</p>
+                   <div className="flex items-center gap-1.5 min-w-0">
+                      <p className="text-[8px] font-bold text-slate-500 uppercase truncate">{l.post}</p>
+                      {idx === 0 && (
+                         <span className="flex-none px-1.5 py-0.5 bg-amber-500/10 border border-amber-500/20 rounded text-[7px] font-black text-amber-500 uppercase tracking-widest">
+                            Elite
+                         </span>
+                      )}
+                      {l.score > 90 && (
+                         <span className="flex-none px-1.5 py-0.5 bg-blue-500/10 border border-blue-500/20 rounded text-[7px] font-black text-blue-500 uppercase tracking-widest">
+                            Consistent
+                         </span>
+                      )}
+                   </div>
                 </div>
-                <div className="flex items-center gap-2">
-                   {idx === 0 && (
-                      <div className="px-2 py-0.5 bg-amber-500/10 border border-amber-500/20 rounded-md text-[7px] font-black text-amber-500 uppercase tracking-widest">
-                         Elite
-                      </div>
-                   )}
-                   {l.score > 90 && (
-                      <div className="px-2 py-0.5 bg-blue-500/10 border border-blue-500/20 rounded-md text-[7px] font-black text-blue-500 uppercase tracking-widest">
-                         Consistent
-                      </div>
-                   )}
-                </div>
+
                 <div className="text-right flex-none">
-                   <p className="text-xs font-black text-blue-400 tabular-nums">{l.score}%</p>
-                   <p className="text-[7px] font-black text-slate-600 uppercase tabular-nums">
+                   <p className="text-xs font-black text-blue-400 tabular-nums leading-tight">{l.score}%</p>
+                   <p className="text-[7px] font-black text-slate-600 uppercase tabular-nums whitespace-nowrap">
                       {(l as any).on_time_rate ?? 0}% on time
                    </p>
                 </div>
