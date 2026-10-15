@@ -224,6 +224,83 @@ async function startServer() {
   // to a public government display or mark the Divisional Secretary as out.
   const DISPLAY_MANAGER_ROLES = ['SA', 'ADMIN', 'IT', 'OPERATOR'];
 
+  // Who may redraw a section's floor plan. The page already hid the editor
+  // from everyone else, but the save endpoint accepted any valid token, so
+  // one request could wipe or rewrite the seating map for a whole department.
+  const LAYOUT_EDITOR_ROLES = ['SA', 'ADMIN', 'IT'];
+
+  // The element kinds a floor plan may contain. FLOOR is the room itself and
+  // carries the plan's dimensions; the rest are things placed on it.
+  const LAYOUT_ELEMENT_TYPES = [
+    'FLOOR', 'DESK', 'SEAT', 'COUNTER', 'CABINET', 'EQUIPMENT',
+    'WALL', 'DOOR', 'WINDOW', 'LABEL',
+  ];
+  const MAX_LAYOUT_ELEMENTS = 500;
+  const LAYOUT_GRID_MAX = 400; // grid units; the editor's canvas cannot exceed this
+
+  // The plan arrives as a client-built JSON blob, so nothing in it is trusted:
+  // keep the known fields, drop everything else, and clamp the geometry so a
+  // malformed or hostile payload cannot store an unbounded or unrenderable plan.
+  const sanitiseLayoutElements = (raw: any[]): any[] => {
+    const clamp = (v: any, min: number, max: number, fallback: number) => {
+      const n = Number(v);
+      if (!Number.isFinite(n)) return fallback;
+      return Math.min(max, Math.max(min, Math.round(n)));
+    };
+    const str = (v: any, max: number) =>
+      typeof v === 'string' ? v.slice(0, max) : undefined;
+
+    const seen = new Set<string>();
+    const out: any[] = [];
+
+    for (const el of raw) {
+      if (!el || typeof el !== 'object') continue;
+      const type = String(el.type || '').toUpperCase();
+      if (!LAYOUT_ELEMENT_TYPES.includes(type)) continue;
+
+      let id = str(el.id, 64) || '';
+      if (!id || seen.has(id)) id = `el-${out.length}-${Date.now().toString(36)}`;
+      seen.add(id);
+
+      const clean: any = {
+        id,
+        type,
+        label: str(el.label, 120) || '',
+        x: clamp(el.x, 0, LAYOUT_GRID_MAX, 0),
+        y: clamp(el.y, 0, LAYOUT_GRID_MAX, 0),
+        w: clamp(el.w, 1, LAYOUT_GRID_MAX, 4),
+        h: clamp(el.h, 1, LAYOUT_GRID_MAX, 3),
+        rotation: [0, 90, 180, 270].includes(Number(el.rotation)) ? Number(el.rotation) : 0,
+        zone_id: str(el.zone_id, 64) || 'general',
+        zone_name: str(el.zone_name, 120) || 'Main Office Floor',
+      };
+
+      if (type === 'SEAT') {
+        // An empty seat is legitimate, so officer_id stays optional.
+        if (el.officer_id !== undefined && el.officer_id !== null && el.officer_id !== '') {
+          clean.officer_id = String(el.officer_id).slice(0, 64);
+        }
+        const category = String(el.category || '').toUpperCase();
+        clean.category = ['FRONT_COUNTER', 'BACK_OFFICE', 'EXECUTIVE', 'SUPPORT_DESK'].includes(category)
+          ? category
+          : 'BACK_OFFICE';
+        const extension = str(el.extension, 32);
+        if (extension) clean.extension = extension;
+        const equipment = str(el.equipment, 160);
+        if (equipment) clean.equipment = equipment;
+        // Live presence is always recomputed from the officer record on read,
+        // so a status sent by the client is only a fallback for empty seats.
+        const status = String(el.status || '').toUpperCase();
+        clean.status = ['ACTIVE', 'PENDING', 'OFFLINE'].includes(status) ? status : 'ACTIVE';
+      }
+
+      out.push(clean);
+      if (out.length >= MAX_LAYOUT_ELEMENTS) break;
+    }
+
+    return out;
+  };
+
   // Posts whose holders are not ranked on the staff attendance leaderboard.
   // Edit this list if the division adds or renames a senior designation.
   const EXECUTIVE_POSTS = [
@@ -1220,6 +1297,9 @@ async function startServer() {
         // original ENUM('CASUAL','SICK','VACATION','DUTY').
         'ALTER TABLE leaves MODIFY COLUMN type VARCHAR(50)',
         'ALTER TABLE leaves MODIFY COLUMN status VARCHAR(50) DEFAULT "PENDING"',
+        // A whole floor plan (desks, seats, walls, doors) serialises well past
+        // TEXT's 64KB ceiling once a large section is mapped in detail.
+        'ALTER TABLE layout_mapping MODIFY COLUMN elements_json MEDIUMTEXT NULL',
       ];
       for (const sql of widenings) {
         try {
@@ -1247,6 +1327,7 @@ async function startServer() {
       { table: 'officers', cols: ['role'], name: 'officers_role_idx' },
       { table: 'activity_logs', cols: ['officer_id'], name: 'activity_logs_officer_idx' },
       { table: 'notifications', cols: ['officer_id'], name: 'notifications_officer_idx' },
+      { table: 'layout_mapping', cols: ['section_id'], name: 'layout_mapping_section_idx' },
     ];
 
     for (const { table, cols, name } of indexes) {
@@ -3731,18 +3812,53 @@ async function startServer() {
       res.status(500).json({ status: 'error', message: error.message });
     }
   });
-  apiRouter.post('/layout/mapping', authenticate, async (req, res) => {
+  // Every section's plan in one round trip. The overview used to fetch each
+  // section separately, which meant one request per department on every load.
+  apiRouter.get('/layout/mapping/all', authenticate, async (_req, res) => {
+    try {
+      const rows = await db('layout_mapping').select('section_id', 'elements_json');
+      const bySection: Record<string, any[]> = {};
+      for (const row of rows) {
+        let parsed: any[] = [];
+        try {
+          const arr = JSON.parse(row.elements_json || '[]');
+          if (Array.isArray(arr)) parsed = arr;
+        } catch {
+          parsed = [];
+        }
+        bySection[String(row.section_id)] = parsed;
+      }
+      res.json({ status: 'success', data: bySection });
+    } catch (error: any) {
+      res.status(500).json({ status: 'error', message: error.message });
+    }
+  });
+
+  apiRouter.post('/layout/mapping', authenticate, requireRole(...LAYOUT_EDITOR_ROLES), async (req, res) => {
     try {
       const { section, layouts } = req.body;
-      if (!section) {
+      if (!section || typeof section !== 'string') {
         return res.status(400).json({ status: 'error', message: 'section parameter is required' });
       }
-      await db('layout_mapping').where('section_id', section).del();
-      await db('layout_mapping').insert({
-        section_id: section,
-        elements_json: JSON.stringify(layouts || [])
+      if (layouts !== undefined && !Array.isArray(layouts)) {
+        return res.status(400).json({ status: 'error', message: 'layouts must be an array' });
+      }
+      const sanitised = sanitiseLayoutElements(layouts || []);
+      if (sanitised.length > MAX_LAYOUT_ELEMENTS) {
+        return res.status(400).json({
+          status: 'error',
+          message: `A section plan may hold at most ${MAX_LAYOUT_ELEMENTS} elements`,
+        });
+      }
+
+      await db.transaction(async (trx) => {
+        await trx('layout_mapping').where('section_id', section).del();
+        await trx('layout_mapping').insert({
+          section_id: section,
+          elements_json: JSON.stringify(sanitised),
+        });
       });
-      res.json({ status: 'success', data: {} });
+      res.json({ status: 'success', data: { section, elements: sanitised.length } });
     } catch (error: any) {
       res.status(500).json({ status: 'error', message: error.message });
     }

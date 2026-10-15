@@ -253,6 +253,7 @@ export class ApiClient {
   async deleteHoliday(id: string | number) { return this.request<any>(`/settings/holidays/${id}`, { method: 'DELETE' }); }
   async getAuditLogs() { return this.request<any>('/audit'); }
   async getDepartmentLayout(section: string) { return this.request<any[]>(`/layout/mapping?section=${encodeURIComponent(section)}`); }
+  async getAllDepartmentLayouts() { return this.request<Record<string, any[]>>('/layout/mapping/all'); }
   async saveDepartmentLayout(section: string, layouts: any[]) { return this.request<any>('/layout/mapping', { method: 'POST', body: JSON.stringify({ section, layouts }) }); }
   async getMyLeaves() { return this.request<LeaveRequest[]>('/leaves'); }
   async getLeaveBalances(officerId?: string | number) { return this.request<any>(`/leaves/balances${officerId ? `?officer_id=${officerId}` : ''}`); }
