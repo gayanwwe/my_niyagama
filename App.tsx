@@ -214,17 +214,6 @@ const AppContent: React.FC = () => {
   const isAdminGroup = ([UserRole.EXECUTIVE, UserRole.ADMIN, UserRole.OPERATOR, UserRole.CHIEF_CLERK, UserRole.SA, UserRole.EX] as UserRole[]).includes(user.role);
   const isDisplayAdmin = ([UserRole.SA, UserRole.OPERATOR, UserRole.IT] as UserRole[]).includes(user.role);
 
-  const mainTabs = isMobilePortrait ? (
-    isAdminGroup ? ['/', '/community', '/mapping', '/notifications', '/executive'] : ['/', '/community', '/gallery', '/notifications', '/profile']
-  ) : (
-    ['/', '/executive', '/mapping', '/circles', '/community', '/gallery', '/notifications'].filter(path => path !== '/executive' || isManagement)
-  );
-
-  const handleDragEnd = (event: any, info: any) => {
-    // Drag navigation handled by MainTabs component
-    if (!isMobilePortrait) return;
-  };
-
   return (
     <div className="min-h-screen bg-[var(--background)] text-[var(--foreground)] flex flex-col font-sans overflow-hidden transition-colors duration-300">
       <nav className="h-14 md:h-16 bg-[var(--card)] border-b border-[var(--border)] flex items-center px-4 md:px-6 sticky top-0 z-[100] shadow-sm">
@@ -235,21 +224,22 @@ const AppContent: React.FC = () => {
           <span className="hidden lg:block text-lg font-black text-slate-800 tracking-tighter">My Niyagama</span>
         </div>
 
-        <div className="flex-1 h-full flex items-center justify-center mx-2 overflow-hidden">
+        <div className="flex-1 min-w-0 h-full flex items-center justify-center mx-2">
           <div className="flex h-full max-w-[900px] w-full items-center justify-center">
             <MainTabs
               user={user}
               lang={lang}
               isMobilePortrait={isMobilePortrait}
               unreadCount={unreadCount}
+              onToggleLang={() => setLang(lang === 'EN' ? 'SI' : 'EN')}
+              onLogout={handleLogout}
             />
           </div>
         </div>
 
-        {/* On a phone this whole block used to be hidden, which left no way to
-            switch language, sign out, or reach the profile - on the platform
-            the app is mainly used on. Language and logout now stay; the theme
-            toggle and the name label are the only things that drop away. */}
+        {/* A phone header has room for the avatar and nothing else, so the
+            language switch and sign-out live in the More menu there. They stay
+            here on wider screens, where the row is not cramped. */}
         <div className="flex items-center gap-1 md:gap-3 flex-none w-auto justify-end lg:min-w-[180px]">
           <button
             onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
@@ -258,13 +248,15 @@ const AppContent: React.FC = () => {
           >
             {theme === 'light' ? '🌙' : '☀️'}
           </button>
-          <button
-            onClick={() => setLang(lang === 'EN' ? 'SI' : 'EN')}
-            className="min-w-[44px] min-h-[44px] px-3 flex items-center justify-center bg-[var(--background)] rounded-xl text-[11px] font-black uppercase tracking-widest text-slate-500 hover:bg-slate-100 active:bg-slate-200 transition-colors whitespace-nowrap"
-            title="Switch language"
-          >
-            {lang === 'EN' ? 'සිං' : 'EN'}
-          </button>
+          {!isMobilePortrait && (
+            <button
+              onClick={() => setLang(lang === 'EN' ? 'SI' : 'EN')}
+              className="min-w-[44px] min-h-[44px] px-3 flex items-center justify-center bg-[var(--background)] rounded-xl text-[11px] font-black uppercase tracking-widest text-slate-500 hover:bg-slate-100 active:bg-slate-200 transition-colors whitespace-nowrap"
+              title="Switch language"
+            >
+              {lang === 'EN' ? 'සිං' : 'EN'}
+            </button>
+          )}
           <Link to="/profile" className="min-h-[44px] flex items-center gap-2 p-1 md:pl-3 bg-[var(--background)] rounded-full border border-[var(--border)] hover:bg-slate-100 active:bg-slate-200 group transition-all flex-shrink-0" title="Profile">
             <span className="text-[10px] font-black text-slate-600 uppercase tracking-widest hidden xl:block pr-1">{user.name?.split(' ')[0]}</span>
             <img
@@ -273,13 +265,15 @@ const AppContent: React.FC = () => {
               alt="profile"
             />
           </Link>
-          <button
-            onClick={handleLogout}
-            className="min-w-[44px] min-h-[44px] flex items-center justify-center bg-[var(--background)] text-slate-500 rounded-full hover:bg-red-50 hover:text-red-500 active:bg-red-100 transition-all flex-none"
-            title="Logout"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
-          </button>
+          {!isMobilePortrait && (
+            <button
+              onClick={handleLogout}
+              className="min-w-[44px] min-h-[44px] flex items-center justify-center bg-[var(--background)] text-slate-500 rounded-full hover:bg-red-50 hover:text-red-500 active:bg-red-100 transition-all flex-none"
+              title="Logout"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
+            </button>
+          )}
         </div>
       </nav>
       <main className="flex-1 relative overflow-hidden">
@@ -305,7 +299,7 @@ const AppContent: React.FC = () => {
               {isManagement && <Route path="/admin/settings" element={<DivisionalSettings user={user} lang={lang} />} />}
               {isManagement && <Route path="/admin/audit" element={<SecurityAudit user={user} lang={lang} />} />}
               {isManagement && <Route path="/admin/biometric" element={<BiometricManagement user={user} lang={lang} />} />}
-              {isManagement && <Route path="/admin/dashboard-control" element={<PublicDashboardControl user={user} lang={lang} />} />}
+              {isDisplayAdmin && <Route path="/admin/dashboard-control" element={<PublicDashboardControl user={user} lang={lang} />} />}
               <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </ErrorBoundary>
