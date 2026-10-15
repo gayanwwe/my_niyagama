@@ -234,6 +234,7 @@ async function startServer() {
   const LAYOUT_ELEMENT_TYPES = [
     'FLOOR', 'DESK', 'SEAT', 'COUNTER', 'CABINET', 'EQUIPMENT',
     'WALL', 'DOOR', 'WINDOW', 'LABEL',
+    'CABIN', // an outlined boundary marking a cabin or partitioned area
   ];
   const MAX_LAYOUT_ELEMENTS = 500;
   const LAYOUT_GRID_MAX = 400; // grid units; the editor's canvas cannot exceed this

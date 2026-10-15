@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from 'react';
 import type { Officer } from '../types';
 import { api } from '../service/api';
 
@@ -21,6 +21,7 @@ type ElementKind =
   | 'WALL'
   | 'DOOR'
   | 'WINDOW'
+  | 'CABIN'      // an outlined boundary marking a cabin or partitioned area
   | 'LABEL';
 
 type ResourceCategory = 'FRONT_COUNTER' | 'BACK_OFFICE' | 'EXECUTIVE' | 'SUPPORT_DESK';
@@ -61,6 +62,9 @@ interface KindSpec {
 }
 
 const KINDS: Record<Exclude<ElementKind, 'FLOOR'>, KindSpec> = {
+  // A cabin is a boundary, not a solid: it paints underneath everything so the
+  // desks and seats inside it stay visible through it.
+  CABIN:     { kind: 'CABIN',     label: 'Cabin Outline', icon: '▭', w: 12, h: 9, z: 0, body: 'bg-indigo-50/40 border-indigo-400', text: 'text-indigo-600' },
   DESK:      { kind: 'DESK',      label: 'Table / Desk',  icon: '🪑', w: 6, h: 3, z: 2, body: 'bg-amber-100/90 border-amber-300',  text: 'text-amber-900' },
   SEAT:      { kind: 'SEAT',      label: 'Officer Seat',  icon: '👤', w: 3, h: 3, z: 4, body: 'bg-white border-slate-300',         text: 'text-slate-700' },
   COUNTER:   { kind: 'COUNTER',   label: 'Public Counter',icon: '🗣️', w: 8, h: 2, z: 2, body: 'bg-teal-100/90 border-teal-300',    text: 'text-teal-900' },
@@ -73,8 +77,24 @@ const KINDS: Record<Exclude<ElementKind, 'FLOOR'>, KindSpec> = {
 };
 
 const PALETTE_ORDER: Exclude<ElementKind, 'FLOOR'>[] = [
-  'SEAT', 'DESK', 'COUNTER', 'CABINET', 'EQUIPMENT', 'WALL', 'DOOR', 'WINDOW', 'LABEL',
+  'SEAT', 'DESK', 'COUNTER', 'CABIN', 'CABINET', 'EQUIPMENT', 'WALL', 'DOOR', 'WINDOW', 'LABEL',
 ];
+
+const ROTATIONS = [0, 90, 180, 270] as const;
+
+/**
+ * A rotated element still occupies its stored box, but it *looks* like the box
+ * turned on its side. Fitting and cropping work from what is visible, so they
+ * need the turned extent, not the stored one.
+ */
+const visualBox = (e: { x: number; y: number; w: number; h: number; rotation?: number }) => {
+  if (e.rotation === 90 || e.rotation === 270) {
+    const cx = e.x + e.w / 2;
+    const cy = e.y + e.h / 2;
+    return { x: cx - e.h / 2, y: cy - e.w / 2, w: e.h, h: e.w };
+  }
+  return { x: e.x, y: e.y, w: e.w, h: e.h };
+};
 
 const CATEGORIES: { id: ResourceCategory; label: string; icon: string; ring: string; chip: string }[] = [
   { id: 'EXECUTIVE',     label: 'Executive',     icon: '👑', ring: 'ring-indigo-400', chip: 'bg-indigo-50 text-indigo-700 border-indigo-200' },
@@ -172,12 +192,15 @@ export const DepartmentMapping: React.FC<{ user: Officer; lang: 'EN' | 'SI' }> =
   const [isEditMode, setIsEditMode] = useState(false);
   const [isDirty, setIsDirty] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [zoom, setZoom] = useState(1);
+  // null means "fit the plan to the pane"; a number is a zoom the user chose.
+  const [manualZoom, setManualZoom] = useState<number | null>(null);
+  const [pane, setPane] = useState({ w: 0, h: 0 });
   const [searchQuery, setSearchQuery] = useState('');
   const [cloneOpen, setCloneOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
   const canvasRef = useRef<HTMLDivElement>(null);
+  const paneRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{
     id: string;
     mode: 'move' | 'resize';
@@ -334,6 +357,91 @@ export const DepartmentMapping: React.FC<{ user: Officer; lang: 'EN' | 'SI' }> =
       ),
     [elements],
   );
+
+  // ------------------------------------------------------- view framing
+
+  /**
+   * What the reader should see: the drawn part of the plan, with a one-cell
+   * margin, rather than the whole room including the empty half nobody has
+   * furnished. Editing still shows the full floor, because you cannot place
+   * anything in a region that has been cropped away.
+   */
+  const contentBounds = useMemo(() => {
+    if (!elements.length) return { x: 0, y: 0, w: floor.w, h: floor.h };
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const e of elements) {
+      const b = visualBox(e);
+      minX = Math.min(minX, b.x);
+      minY = Math.min(minY, b.y);
+      maxX = Math.max(maxX, b.x + b.w);
+      maxY = Math.max(maxY, b.y + b.h);
+    }
+    // Purely the content's own box. It is deliberately not clipped to the
+    // room: a turned element pivots about its centre and can reach past the
+    // room's edge, and cropping it off would hide part of the plan.
+    const PAD = 1;
+    const x = Math.floor(minX) - PAD;
+    const y = Math.floor(minY) - PAD;
+    return {
+      x,
+      y,
+      w: Math.max(4, Math.ceil(maxX) + PAD - x),
+      h: Math.max(4, Math.ceil(maxY) + PAD - y),
+    };
+  }, [elements, floor.w, floor.h]);
+
+  const view = isEditMode ? { x: 0, y: 0, w: floor.w, h: floor.h } : contentBounds;
+
+  useLayoutEffect(() => {
+    const node = paneRef.current;
+    if (!node) return;
+    const measure = () => setPane({ w: node.clientWidth, h: node.clientHeight });
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(node);
+    return () => ro.disconnect();
+  }, [isEditMode, isLoading, sectionView]);
+
+  // The ceiling on the pane, taken from the window rather than the pane itself:
+  // the fit depends on the height and the height depends on the fit, so one of
+  // them has to come from outside.
+  const [winH, setWinH] = useState(() => (typeof window !== 'undefined' ? window.innerHeight : 900));
+  useEffect(() => {
+    const onResize = () => setWinH(window.innerHeight);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+  const PANE_PADDING = 44; // the pane's p-4 on both sides, plus scrollbar headroom
+  const maxPaneH = Math.min(620, Math.round(winH * 0.7));
+
+  /** The zoom at which the whole visible plan fits the pane in both axes. */
+  const fitZoom = useMemo(() => {
+    if (!pane.w || !view.w || !view.h) return 1;
+    return clamp(
+      Math.min(
+        (pane.w - PANE_PADDING) / (view.w * CELL),
+        (maxPaneH - PANE_PADDING) / (view.h * CELL),
+      ),
+      0.12,
+      2,
+    );
+  }, [pane.w, view.w, view.h, maxPaneH]);
+
+  const zoom = manualZoom ?? (isEditMode ? 1 : fitZoom);
+  const unit = CELL * zoom;
+
+  // A short plan should not sit in a tall empty box, so the pane shrinks to
+  // the fitted drawing instead of always claiming 70% of the screen.
+  const paneHeight =
+    manualZoom === null && !isEditMode
+      ? Math.max(200, Math.min(maxPaneH, Math.round(view.h * unit) + PANE_PADDING))
+      : maxPaneH;
+
+  // A plan that no longer fits what the user zoomed to should go back to fitting.
+  useEffect(() => { setManualZoom(null); }, [selectedSection, isEditMode]);
 
   const searchHits = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -496,6 +604,29 @@ export const DepartmentMapping: React.FC<{ user: Officer; lang: 'EN' | 'SI' }> =
     setIsDirty(true);
   }, []);
 
+  /** Keeps the element's *visible* box inside the room, turned or not. */
+  const clampToFloor = useCallback(
+    (el: LayoutElement, next: Partial<LayoutElement>) => {
+      const merged = { ...el, ...next };
+      const vb = visualBox(merged);
+      const offX = vb.x - merged.x;
+      const offY = vb.y - merged.y;
+      return {
+        ...next,
+        x: Math.round(clamp(merged.x, -offX, Math.max(-offX, floor.w - vb.w - offX))),
+        y: Math.round(clamp(merged.y, -offY, Math.max(-offY, floor.h - vb.h - offY))),
+      };
+    },
+    [floor.w, floor.h],
+  );
+
+  const rotateTo = useCallback(
+    (el: LayoutElement, deg: 0 | 90 | 180 | 270) => {
+      patch(el.id, clampToFloor(el, { rotation: deg }));
+    },
+    [patch, clampToFloor],
+  );
+
   const nudge = useCallback(
     (dx: number, dy: number) => {
       if (!selected) return;
@@ -598,16 +729,24 @@ export const DepartmentMapping: React.FC<{ user: Officer; lang: 'EN' | 'SI' }> =
       prev.map((el) => {
         if (el.id !== d.id) return el;
         if (d.mode === 'move') {
+          const vb = visualBox(el);
+          const offX = vb.x - el.x;
+          const offY = vb.y - el.y;
           return {
             ...el,
-            x: clamp(d.ox + dx, 0, Math.max(0, floor.w - el.w)),
-            y: clamp(d.oy + dy, 0, Math.max(0, floor.h - el.h)),
+            x: Math.round(clamp(d.ox + dx, -offX, Math.max(-offX, floor.w - vb.w - offX))),
+            y: Math.round(clamp(d.oy + dy, -offY, Math.max(-offY, floor.h - vb.h - offY))),
           };
         }
+        // At a quarter turn the handle has turned with the element, so the
+        // drag the user feels as "wider" arrives on the other axis.
+        const turned = el.rotation === 90 || el.rotation === 270;
+        const dw = turned ? dy : dx;
+        const dh = turned ? dx : dy;
         return {
           ...el,
-          w: clamp(d.ow + dx, 1, floor.w - el.x),
-          h: clamp(d.oh + dy, 1, floor.h - el.y),
+          w: clamp(d.ow + dw, 1, floor.w - el.x),
+          h: clamp(d.oh + dh, 1, floor.h - el.y),
         };
       }),
     );
@@ -791,8 +930,6 @@ export const DepartmentMapping: React.FC<{ user: Officer; lang: 'EN' | 'SI' }> =
   }
 
   // =========================================================== SECTION VIEW
-
-  const unit = CELL * zoom;
 
   return (
     <div className="max-w-7xl mx-auto space-y-5 animate-fade-in pb-32 px-4 sm:px-6">
@@ -979,13 +1116,24 @@ export const DepartmentMapping: React.FC<{ user: Officer; lang: 'EN' | 'SI' }> =
               </div>
               <div className="flex items-center gap-1 shrink-0">
                 <button
-                  onClick={() => setZoom((z) => clamp(Number((z - 0.15).toFixed(2)), 0.4, 1.8))}
+                  onClick={() => setManualZoom(clamp(Number((zoom - 0.15).toFixed(2)), 0.15, 2))}
                   className="w-9 h-9 min-h-[36px] bg-white border border-slate-200 rounded-lg text-sm font-black text-slate-600"
                   aria-label="Zoom out"
                 >−</button>
-                <span className="text-[10px] font-black text-slate-500 w-10 text-center">{Math.round(zoom * 100)}%</span>
                 <button
-                  onClick={() => setZoom((z) => clamp(Number((z + 0.15).toFixed(2)), 0.4, 1.8))}
+                  onClick={() => setManualZoom(null)}
+                  title={t('තිරයට සරිලන සේ', 'Fit to screen')}
+                  className={`px-2 h-9 min-h-[36px] rounded-lg text-[10px] font-black tabular-nums border ${
+                    manualZoom === null && !isEditMode
+                      ? 'bg-blue-600 border-blue-600 text-white'
+                      : 'bg-white border-slate-200 text-slate-600'
+                  }`}
+                >
+                  {/* Fitting only applies to the read-only view; editing is 1:1. */}
+                  {manualZoom === null && !isEditMode ? t('සරිලන', 'FIT') : `${Math.round(zoom * 100)}%`}
+                </button>
+                <button
+                  onClick={() => setManualZoom(clamp(Number((zoom + 0.15).toFixed(2)), 0.15, 2))}
                   className="w-9 h-9 min-h-[36px] bg-white border border-slate-200 rounded-lg text-sm font-black text-slate-600"
                   aria-label="Zoom in"
                 >+</button>
@@ -998,17 +1146,30 @@ export const DepartmentMapping: React.FC<{ user: Officer; lang: 'EN' | 'SI' }> =
                 <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest">Drawing floor plan…</p>
               </div>
             ) : (
-              <div className="overflow-auto p-4 sm:p-6 bg-slate-100/50" style={{ maxHeight: '70vh' }}>
+              <div
+                ref={paneRef}
+                className={`bg-slate-100/50 p-3 sm:p-4 ${
+                  manualZoom === null && !isEditMode
+                    ? 'overflow-hidden flex items-center justify-center'
+                    : 'overflow-auto flex items-start justify-center'
+                }`}
+                style={{ height: paneHeight }}
+              >
                 <div
                   ref={canvasRef}
                   onPointerDown={() => setSelectedId(null)}
-                  className="relative bg-white border-2 border-slate-300 rounded-lg mx-auto"
+                  className={`relative rounded-lg shrink-0 ${
+                    isEditMode ? 'bg-white border-2 border-slate-300' : 'bg-white'
+                  }`}
                   style={{
-                    width: floor.w * unit,
-                    height: floor.h * unit,
-                    backgroundImage:
-                      'linear-gradient(to right, rgba(100,116,139,0.10) 1px, transparent 1px), linear-gradient(to bottom, rgba(100,116,139,0.10) 1px, transparent 1px)',
-                    backgroundSize: `${unit}px ${unit}px`,
+                    width: view.w * unit,
+                    height: view.h * unit,
+                    // The grid is a drawing aid. It only helps while placing
+                    // things, and it clutters the plan everyone else reads.
+                    backgroundImage: isEditMode
+                      ? 'linear-gradient(to right, rgba(100,116,139,0.10) 1px, transparent 1px), linear-gradient(to bottom, rgba(100,116,139,0.10) 1px, transparent 1px)'
+                      : undefined,
+                    backgroundSize: isEditMode ? `${unit}px ${unit}px` : undefined,
                   }}
                 >
                   {!elements.length && (
@@ -1047,23 +1208,37 @@ export const DepartmentMapping: React.FC<{ user: Officer; lang: 'EN' | 'SI' }> =
                         onPointerUp={onPointerUp}
                         onPointerCancel={onPointerUp}
                         title={officer ? `${officer.name} — ${officer.post || officer.designation || ''}` : el.label}
-                        className={`absolute flex flex-col items-center justify-center overflow-hidden border-2 ${spec.body} ${
-                          el.type === 'SEAT' ? 'rounded-full' : el.type === 'LABEL' ? 'rounded-lg' : 'rounded-md'
+                        className={`absolute flex flex-col items-center justify-center border-2 ${spec.body} ${
+                          el.type === 'CABIN' ? 'overflow-visible' : 'overflow-hidden'
+                        } ${
+                          el.type === 'SEAT' ? 'rounded-full'
+                          : el.type === 'LABEL' ? 'rounded-lg'
+                          : el.type === 'CABIN' ? 'rounded-xl border-dashed'
+                          : 'rounded-md'
                         } ${isEditMode ? 'cursor-move' : 'cursor-pointer'} ${
                           isSel ? 'ring-4 ring-blue-500/50 z-40' : ''
                         } ${isHit ? 'ring-4 ring-amber-400/70 z-30' : ''} ${
                           isDup ? 'ring-4 ring-rose-500/60' : ''
                         } transition-shadow`}
                         style={{
-                          left: el.x * unit,
-                          top: el.y * unit,
+                          // Offset by the crop origin so a cropped view still
+                          // places everything where the plan says it is.
+                          left: (el.x - view.x) * unit,
+                          top: (el.y - view.y) * unit,
                           width: el.w * unit,
                           height: el.h * unit,
+                          transform: el.rotation ? `rotate(${el.rotation}deg)` : undefined,
                           zIndex: isSel ? 40 : spec.z,
                           touchAction: isEditMode ? 'none' : 'auto',
                         }}
                       >
-                        {el.type === 'SEAT' ? (
+                        {el.type === 'CABIN' ? (
+                          // The label sits on the boundary line, out of the way
+                          // of whatever is placed inside the cabin.
+                          <span className="absolute -top-2 left-2 px-1.5 bg-white text-[9px] font-black uppercase tracking-wider text-indigo-600 whitespace-nowrap rounded">
+                            {el.label}
+                          </span>
+                        ) : el.type === 'SEAT' ? (
                           <>
                             <span className={`absolute top-0.5 right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-white ${dot}`} />
                             {officer?.profile_pic ? (
@@ -1245,6 +1420,24 @@ export const DepartmentMapping: React.FC<{ user: Officer; lang: 'EN' | 'SI' }> =
                         <button onClick={() => nudge(-1, 0)} className="h-10 min-h-[40px] bg-slate-100 rounded-lg font-black text-slate-600">←</button>
                         <button onClick={() => nudge(0, 1)} className="h-10 min-h-[40px] bg-slate-100 rounded-lg font-black text-slate-600">↓</button>
                         <button onClick={() => nudge(1, 0)} className="h-10 min-h-[40px] bg-slate-100 rounded-lg font-black text-slate-600">→</button>
+                      </div>
+                    </div>
+                    <div>
+                      <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5">{t('හැරවීම', 'Rotate')}</p>
+                      <div className="flex gap-1">
+                        {ROTATIONS.map((deg) => (
+                          <button
+                            key={deg}
+                            onClick={() => rotateTo(selected, deg)}
+                            className={`h-10 min-h-[40px] px-2.5 rounded-lg text-[10px] font-black tabular-nums transition-colors ${
+                              (selected.rotation || 0) === deg
+                                ? 'bg-slate-900 text-white'
+                                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                            }`}
+                          >
+                            {deg}°
+                          </button>
+                        ))}
                       </div>
                     </div>
                     <div>
