@@ -3017,6 +3017,26 @@ async function startServer() {
    * accrues leave for days nobody has uploaded yet - counting past it turned
    * officer 437's 34 absences into 40.
    */
+  /**
+   * The first date the division has biometric data for.
+   *
+   * Absence is inferred from missing scans, so a year the device predates has
+   * no evidence either way. Without this floor every working day of 2022, 2023
+   * and 2024 would be charged as leave purely because no system existed yet,
+   * which would wipe out the prior-year vacation an officer is entitled to
+   * draw on.
+   */
+  const getAttendanceFloor = async (): Promise<string | null> => {
+    try {
+      const bio = await db('biometric_logs').min('scan_date as m').first();
+      if (bio?.m) return toDateKey(bio.m);
+      const att = await db('attendance').min('date as m').first();
+      return att?.m ? toDateKey(att.m) : null;
+    } catch {
+      return null;
+    }
+  };
+
   const getAttendanceHorizon = async (): Promise<string | null> => {
     try {
       const bio = await db('biometric_logs').max('scan_date as m').first();
@@ -3028,13 +3048,13 @@ async function startServer() {
     }
   };
 
-  const computeLeaveBalances = async (officerId: any, year: number = new Date().getFullYear()) => {
+  const computeYearUsage = async (officerId: any, year: number = new Date().getFullYear()) => {
     const startOfYear = `${year}-01-01`;
     const endOfYear = `${year}-12-31`;
 
     const calendar = await loadLeaveCalendar();
 
-    const [approvedLeaves, attendanceLeaves, attendedDays, officerRow, horizon] = await Promise.all([
+    const [approvedLeaves, attendanceLeaves, attendedDays, officerRow, horizon, floor] = await Promise.all([
       db('leaves')
         .where({ officer_id: officerId, status: 'APPROVED' })
         .where(function () {
@@ -3054,6 +3074,7 @@ async function startServer() {
         .select('date'),
       db('officers').where('id', officerId).first('join_date', 'work_type', 'is_field_officer'),
       getAttendanceHorizon(),
+      getAttendanceFloor(),
     ]);
 
     const balances = {
@@ -3124,9 +3145,11 @@ async function startServer() {
     // Never look past the data: no scans have been imported beyond this point,
     // so absence cannot be inferred there.
     const absenceLimit = horizon && horizon < endOfYear ? horizon : endOfYear;
-    // Nor before the officer joined.
+    // Nor before the officer joined, nor before any biometric data exists at
+    // all - a year the device predates is not evidence of absence.
     const joinKey = officerRow?.join_date ? toDateKey(officerRow.join_date) : null;
-    const absenceStart = joinKey && joinKey > startOfYear ? joinKey : startOfYear;
+    let absenceStart = joinKey && joinKey > startOfYear ? joinKey : startOfYear;
+    if (floor && floor > absenceStart) absenceStart = floor;
 
     // Field officers work away from the building and are not expected to scan,
     // so a missing record says nothing about whether they worked. Across the
@@ -3173,30 +3196,84 @@ async function startServer() {
     // Half days still come out of casual leave.
     balances.casual += balances.half_day_count;
 
-    // --- Overflow casual into vacation ---
-    // Casual used to be reported raw, so an officer who had consumed more than
-    // their entitlement read "40.5 / 21", which is not a balance. Once the
-    // casual allowance is spent the remainder comes out of vacation, and only
-    // what exceeds both is unpaid.
-    const casualConsumed = balances.casual;
-    (balances as any).casual_consumed = casualConsumed;
-
-    balances.casual = Math.min(casualConsumed, balances.casual_total);
-    const overflow = Math.max(0, casualConsumed - balances.casual_total);
-
-    balances.vacation += overflow;
-    (balances as any).vacation_from_casual = overflow;
-
-    const beyondVacation = Math.max(0, balances.vacation - balances.vacation_total);
-    balances.vacation = Math.min(balances.vacation, balances.vacation_total);
-    (balances as any).no_pay = beyondVacation;
-
-    // Casual and vacation are one pool once they cascade, so the figure that
-    // actually matters is the combined one.
-    (balances as any).combined_used = balances.casual + balances.vacation + beyondVacation;
-    (balances as any).combined_total = balances.casual_total + balances.vacation_total;
-
+    // Raw consumption for the year. The cascade and any draw on earlier years
+    // are applied by computeLeaveBalances, which needs the uncapped figures.
+    (balances as any).casual_consumed = balances.casual;
+    (balances as any).vacation_consumed = balances.vacation;
     return balances;
+  };
+
+  // How many years the summary covers, the current one included. An officer may
+  // draw on vacation left unused in the earlier years of this window.
+  const LEAVE_HISTORY_YEARS = 5;
+
+  /**
+   * An officer's leave position: this year's usage, the preceding years, and
+   * the effect of drawing any excess from vacation those years left unused.
+   *
+   * Casual leave does not carry: only vacation that went unused in an earlier
+   * year can be drawn on, and the most recent year is drawn down first.
+   */
+  const computeLeaveBalances = async (officerId: any, year: number = new Date().getFullYear()) => {
+    const years = Array.from({ length: LEAVE_HISTORY_YEARS }, (_, i) => year - i);
+    const usages = await Promise.all(years.map((y) => computeYearUsage(officerId, y)));
+
+    const summarise = (u: any, y: number) => {
+      const casualConsumed = u.casual_consumed;
+      const casual = Math.min(casualConsumed, u.casual_total);
+      const overflow = Math.max(0, casualConsumed - u.casual_total);
+      const vacationUsed = u.vacation_consumed + overflow;
+      return {
+        year: y,
+        casual,
+        casual_total: u.casual_total,
+        vacation: Math.min(vacationUsed, u.vacation_total),
+        vacation_total: u.vacation_total,
+        vacation_from_casual: overflow,
+        // What this year cannot absorb, and what it has left to lend.
+        excess: Math.max(0, vacationUsed - u.vacation_total),
+        vacation_remaining: Math.max(0, u.vacation_total - vacationUsed),
+        absent_days: u.absent_days,
+        half_day_count: u.half_day_count,
+        short_leave_count: u.short_leave_count,
+        counted_up_to: u.counted_up_to,
+      };
+    };
+
+    const history = usages.map((u, i) => summarise(u, years[i]));
+    const current = history[0];
+    const priorYears = history.slice(1);
+
+    // Draw the excess from earlier years, most recent first.
+    let outstanding = current.excess;
+    const drawnFrom: { year: number; days: number }[] = [];
+    for (const prior of priorYears) {
+      if (outstanding <= 0) break;
+      const available = prior.vacation_remaining;
+      if (available <= 0) continue;
+      const take = Math.min(available, outstanding);
+      prior.vacation += take;
+      prior.vacation_remaining -= take;
+      (prior as any).lent_to_current = take;
+      outstanding -= take;
+      drawnFrom.push({ year: prior.year, days: take });
+    }
+
+    const base = usages[0];
+    return {
+      ...base,
+      casual: current.casual,
+      vacation: current.vacation,
+      vacation_from_casual: current.vacation_from_casual,
+      // Only what no year can cover is unpaid.
+      no_pay: outstanding,
+      carried_forward_used: current.excess - outstanding,
+      carried_forward_available: priorYears.reduce((sum, p) => sum + p.vacation_remaining, 0),
+      carried_forward_from: drawnFrom,
+      combined_used: current.casual + current.vacation + current.excess,
+      combined_total: current.casual_total + current.vacation_total,
+      history,
+    };
   };
 
   /** Working days a prospective request would consume, by entitlement bucket. */

@@ -23,7 +23,7 @@ const LeaveModule: React.FC<Props> = ({ user, lang }) => {
   // Leave history and the attendance calendar used to be buried in the profile
   // page. They belong with leave, but stacking both on one screen makes a long
   // scroll on a phone, so they sit behind a switch.
-  const [view, setView] = useState<'LEAVES' | 'ATTENDANCE'>('LEAVES');
+  const [view, setView] = useState<'LEAVES' | 'ATTENDANCE' | 'HISTORY'>('LEAVES');
 
   const [form, setForm] = useState({
     type: 'CASUAL' as 'CASUAL' | 'VACATION' | 'DUTY' | 'SHORT_LEAVE' | 'HALF_DAY',
@@ -194,6 +194,21 @@ const LeaveModule: React.FC<Props> = ({ user, lang }) => {
         ))}
       </div>
 
+      {balances?.carried_forward_used > 0 && (
+        <div className="bg-amber-50 border border-amber-100 rounded-[2rem] p-5 flex items-start gap-4">
+          <div className="w-10 h-10 rounded-2xl bg-amber-500 text-white flex items-center justify-center flex-none font-black">↩</div>
+          <div>
+            <p className="text-[11px] font-black uppercase tracking-widest text-amber-700">
+              {balances.carried_forward_used} {t('දින පෙර වසරින්', 'day(s) drawn from earlier years')}
+            </p>
+            <p className="text-[10px] font-bold text-slate-500 mt-0.5">
+              {(balances.carried_forward_from || []).map((f: any) => `${f.year}: ${f.days}`).join(' · ')}
+              {balances.carried_forward_available > 0 && ` · ${balances.carried_forward_available} ${t('තව ඉතිරි', 'still available')}`}
+            </p>
+          </div>
+        </div>
+      )}
+
       {balances?.no_pay > 0 && (
         <div className="bg-red-50 border border-red-100 rounded-[2rem] p-5 flex items-center gap-4">
           <div className="w-10 h-10 rounded-2xl bg-red-500 text-white flex items-center justify-center flex-none font-black">!</div>
@@ -202,7 +217,7 @@ const LeaveModule: React.FC<Props> = ({ user, lang }) => {
               {t('වැටුප් රහිත දින', 'No-pay days')}: {balances.no_pay}
             </p>
             <p className="text-[10px] font-bold text-slate-500 mt-0.5">
-              {t('අනියම් සහ වාර්ෂික නිවාඩු දෙකම අවසන්', 'Both casual and vacation allowances are fully used')}
+              {t('මෙම වසර සහ පෙර වසර දෙකම අවසන්', 'This year and all carry-forward vacation are fully used')}
             </p>
           </div>
         </div>
@@ -212,6 +227,7 @@ const LeaveModule: React.FC<Props> = ({ user, lang }) => {
         {([
           ['LEAVES', t('නිවාඩු ඉතිහාසය', 'Leave History')],
           ['ATTENDANCE', t('පැමිණීම', 'Attendance')],
+          ['HISTORY', t('වසර 5', '5-Year Summary')],
         ] as const).map(([key, label]) => (
           <button
             key={key}
@@ -225,7 +241,69 @@ const LeaveModule: React.FC<Props> = ({ user, lang }) => {
         ))}
       </div>
 
-      {view === 'ATTENDANCE' ? (
+      {view === 'HISTORY' ? (
+        <div className="bg-white rounded-[3.5rem] shadow-sm border border-slate-100 overflow-hidden">
+          <div className="p-8 sm:p-10 border-b border-slate-100 bg-slate-50">
+            <h3 className="text-sm font-black uppercase tracking-widest text-slate-800">
+              {t('වසර 5 ක සාරාංශය', 'Five-Year Summary')}
+            </h3>
+            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">
+              {t('වාර්ෂික නිවාඩු පමණක් ඉදිරියට ගෙන යා හැක', 'Only unused vacation carries forward — casual does not')}
+            </p>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                <tr>
+                  <th className="p-4 sm:p-6">{t('වසර', 'Year')}</th>
+                  <th className="p-4 sm:p-6">{t('අනියම්', 'Casual')}</th>
+                  <th className="p-4 sm:p-6">{t('වාර්ෂික', 'Vacation')}</th>
+                  <th className="p-4 sm:p-6 text-right">{t('ඉතිරි', 'Can carry')}</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-50">
+                {(balances?.history || []).map((h: any, i: number) => (
+                  <tr key={h.year} className={i === 0 ? 'bg-blue-50/40' : 'hover:bg-slate-50/50 transition-colors'}>
+                    <td className="p-4 sm:p-6">
+                      <span className="text-xs font-black text-slate-800">{h.year}</span>
+                      {i === 0 && (
+                        <span className="ml-2 px-2 py-0.5 bg-[#1877F2] text-white rounded-full text-[8px] font-black uppercase tracking-widest">
+                          {t('මෙම වසර', 'This year')}
+                        </span>
+                      )}
+                      {h.lent_to_current > 0 && (
+                        <span className="ml-2 px-2 py-0.5 bg-amber-100 text-amber-700 rounded-full text-[8px] font-black uppercase tracking-widest">
+                          −{h.lent_to_current}
+                        </span>
+                      )}
+                    </td>
+                    <td className="p-4 sm:p-6 text-xs font-bold text-slate-600 tabular-nums">{h.casual}/{h.casual_total}</td>
+                    <td className="p-4 sm:p-6 text-xs font-bold text-slate-600 tabular-nums">{h.vacation}/{h.vacation_total}</td>
+                    <td className="p-4 sm:p-6 text-right">
+                      <span className={`text-xs font-black tabular-nums ${h.vacation_remaining > 0 ? 'text-emerald-600' : 'text-slate-300'}`}>
+                        {i === 0 ? '—' : h.vacation_remaining}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="p-6 sm:p-8 bg-slate-50 border-t border-slate-100">
+            <p className="text-[11px] font-bold text-slate-500 leading-relaxed">
+              {t(
+                'මෙම වසරේ නිවාඩු ඉක්මවා ගිය විට, ඉතිරි වාර්ෂික නිවාඩු මෑත වසරේ සිට අඩු කෙරේ.',
+                'When this year runs out, the excess comes off unused vacation from earlier years, most recent first. Casual leave does not carry forward.',
+              )}
+            </p>
+            <p className="text-[11px] font-black text-slate-700 mt-2 tabular-nums">
+              {t('ඉදිරියට ගෙන යා හැකි ශේෂය', 'Available to carry forward')}: {balances?.carried_forward_available ?? 0} {t('දින', 'days')}
+            </p>
+          </div>
+        </div>
+      ) : view === 'ATTENDANCE' ? (
         <div className="bg-white rounded-[3.5rem] shadow-sm border border-slate-100 overflow-hidden">
           <div className="p-8 sm:p-10 border-b border-slate-100 bg-slate-50">
             <h3 className="text-sm font-black uppercase tracking-widest text-slate-800">{t('මගේ පැමිණීම', 'My Attendance')}</h3>
