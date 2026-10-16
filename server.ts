@@ -229,6 +229,18 @@ async function startServer() {
   // one request could wipe or rewrite the seating map for a whole department.
   const LAYOUT_EDITOR_ROLES = ['SA', 'ADMIN', 'IT'];
 
+  // Who may record that an officer is away for months at a time.
+  const LONG_LEAVE_MANAGER_ROLES = ['SA', 'ADMIN', 'IT', 'LEAVE_OFFICER', 'CHIEF_CLERK'];
+
+  const LONG_LEAVE_TYPES = [
+    'FOREIGN',   // posted or travelling abroad
+    'LOCAL',     // long local leave
+    'MATERNITY',
+    'MEDICAL',
+    'STUDY',
+    'SPECIAL',
+  ];
+
   // The element kinds a floor plan may contain. FLOOR is the room itself and
   // carries the plan's dimensions; the rest are things placed on it.
   const LAYOUT_ELEMENT_TYPES = [
@@ -711,6 +723,27 @@ async function startServer() {
         table.boolean('is_deleted').defaultTo(false);
         table.timestamp('deleted_at').nullable();
         table.timestamps(true, true);
+      });
+    }
+
+    // Long absences - maternity, medical, study, foreign postings - are recorded
+    // by the office rather than requested by the officer, and they do not come
+    // out of the 21 casual / 21 vacation allowance. They live apart from
+    // `leaves` for that reason.
+    const hasLongTermLeaves = await db.schema.hasTable('long_term_leaves');
+    if (!hasLongTermLeaves) {
+      await db.schema.createTable('long_term_leaves', (table) => {
+        table.bigIncrements('id');
+        table.bigInteger('officer_id').unsigned().references('id').inTable('officers').onDelete('CASCADE');
+        table.string('type', 50);
+        table.date('start_date');
+        table.date('end_date');
+        table.string('reference_no', 100).nullable();
+        table.text('remarks').nullable();
+        table.string('created_by', 100).nullable();
+        table.timestamps(true, true);
+        table.index(['officer_id'], 'long_term_leaves_officer_idx');
+        table.index(['start_date', 'end_date'], 'long_term_leaves_range_idx');
       });
     }
 
@@ -2397,80 +2430,240 @@ async function startServer() {
       res.status(500).json({ status: 'error', message: error.message });
     }
   });
+  /**
+   * One screen's worth of what a Divisional Secretary actually needs: how many
+   * officers there are, how they are distributed, who is formally away, who is
+   * in today, and what tomorrow looks like.
+   *
+   * It replaces a version that reported a hardcoded "divisional velocity" of
+   * 1.24, a risk score of (leave / staff * 5 + 10), a task count that ignored
+   * which department it was counting for, and a forecast built from
+   * Math.random(). None of it described the division.
+   */
   apiRouter.get('/intelligence/snapshot', authenticate, async (req, res) => {
     try {
-      const dateParam = req.query.date as string;
-      const today = dateParam || new Date().toLocaleDateString('en-CA');
-      
-      const departments = await db('departments').select('name');
-      const officers = await db('officers').select('id', 'department');
-      
-      const deptsStats = await Promise.all(departments.map(async (dept) => {
-        const deptStaff = officers.filter(o => o.department === dept.name);
-        const staffCount = deptStaff.length;
-        
-        const leaveCount = await db('leaves')
-          .whereIn('officer_id', deptStaff.map(o => o.id))
-          .where('status', 'APPROVED')
-          .where('start_date', '<=', today)
-          .where('end_date', '>=', today)
-          .count('id as count')
-          .first();
+      const today = (req.query.date as string) || new Date().toLocaleDateString('en-CA');
+      const tomorrowDate = new Date(`${today}T00:00:00`);
+      tomorrowDate.setDate(tomorrowDate.getDate() + 1);
+      const tomorrow = toDateKey(tomorrowDate);
 
-        const tasksCount = await db('tasks')
-          .whereIn('project_id', function() {
-            this.select('id').from('projects').whereIn('circle_id', function() {
-              this.select('id').from('circles');
-            });
-          })
-          .count('id as count')
-          .first();
-        
-        const risk = staffCount > 0 ? Math.round((Number(leaveCount?.count || 0) / staffCount) * 100) : 0;
+      const trendFrom = new Date(`${today}T00:00:00`);
+      trendFrom.setDate(trendFrom.getDate() - 29);
+      const trendStart = toDateKey(trendFrom);
 
-        return {
-          name: dept.name,
-          staff: staffCount,
-          leave: Number(leaveCount?.count || 0),
-          tasks: Number(tasksCount?.count || 0),
-          risk: Math.min(risk * 5 + 10, 100) // Base risk + leave impact
-        };
-      }));
+      const calendar = await loadLeaveCalendar();
 
-      // Efficiency trend (last 5 days)
-      const efficiency = [];
-      for (let i = 4; i >= 0; i--) {
-        const d = new Date();
-        d.setDate(d.getDate() - i);
-        const dateStr = d.toLocaleDateString('en-CA');
-        const dayName = d.toLocaleDateString('en-US', { weekday: 'short' });
-        
-        const attCount = await db('attendance')
-          .where({ date: dateStr, status: 'PRESENT' })
-          .count('id as count')
-          .first();
-        
-        const value = officers.length > 0 ? Math.round((Number(attCount?.count || 0) / officers.length) * 100) : 0;
-        efficiency.push({ day: dayName, value, predicted: value + (Math.random() * 5 - 2.5) });
+      const [officers, longLeaves, leavesToday, leavesTomorrow, attToday, trendRows, pending] =
+        await Promise.all([
+          db('officers')
+            .where(function () { this.where('is_deleted', false).orWhereNull('is_deleted'); })
+            .select('id', 'name', 'post', 'department', 'work_type', 'profile_pic', 'join_date'),
+          // Current and upcoming spells, so the roster can show who is away and
+          // who is about to be.
+          db('long_term_leaves as l')
+            .leftJoin('officers as o', 'o.id', 'l.officer_id')
+            .where('l.end_date', '>=', today)
+            .select('l.*', 'o.name as officer_name', 'o.post as officer_post', 'o.department as officer_department', 'o.profile_pic as officer_pic')
+            .orderBy('l.start_date', 'asc'),
+          db('leaves as lv')
+            .leftJoin('officers as o', 'o.id', 'lv.officer_id')
+            .where('lv.status', 'APPROVED')
+            .where('lv.start_date', '<=', today)
+            .where('lv.end_date', '>=', today)
+            .select('lv.officer_id', 'lv.type', 'lv.end_date', 'o.name as officer_name', 'o.department as officer_department', 'o.post as officer_post'),
+          db('leaves')
+            .where('status', 'APPROVED')
+            .where('start_date', '<=', tomorrow)
+            .where('end_date', '>=', tomorrow)
+            .select('officer_id', 'type'),
+          db('attendance').where('date', today).select('officer_id', 'status'),
+          db('attendance').whereBetween('date', [trendStart, today]).select('date', 'status'),
+          db('leaves').where('status', 'PENDING').count('id as n').first(),
+        ]);
+
+      const active = (s: any) => ['PRESENT', 'FIELD', 'MISSING_PUNCH', 'SHORT_LEAVE'].includes(s);
+
+      // --- who is where today -------------------------------------------
+      const longLeaveToday = new Set(
+        longLeaves
+          .filter((l: any) => toDateKey(l.start_date) <= today && toDateKey(l.end_date) >= today)
+          .map((l: any) => String(l.officer_id)),
+      );
+      const longLeaveTomorrow = new Set(
+        longLeaves
+          .filter((l: any) => toDateKey(l.start_date) <= tomorrow && toDateKey(l.end_date) >= tomorrow)
+          .map((l: any) => String(l.officer_id)),
+      );
+      const onLeaveToday = new Set(leavesToday.map((l: any) => String(l.officer_id)));
+      const onLeaveTomorrow = new Set(leavesTomorrow.map((l: any) => String(l.officer_id)));
+
+      const attendanceByOfficer = new Map<string, string>();
+      for (const row of attToday) attendanceByOfficer.set(String(row.officer_id), row.status);
+
+      const isWorkingToday = calendar.isWorkingDay(today);
+      const isWorkingTomorrow = calendar.isWorkingDay(tomorrow);
+
+      let present = 0;
+      let halfDay = 0;
+      let markedLeave = 0;
+      let noRecord = 0;
+      for (const o of officers) {
+        const key = String(o.id);
+        if (longLeaveToday.has(key)) continue;        // formally away, not expected
+        const status = attendanceByOfficer.get(key);
+        if (active(status || '')) present += 1;
+        else if (status === 'HALF_DAY') { halfDay += 1; present += 1; }
+        else if (status === 'LEAVE' || onLeaveToday.has(key)) markedLeave += 1;
+        else noRecord += 1;
       }
 
-      const totalLeaves = deptsStats.reduce((acc, d) => acc + d.leave, 0);
-      const burnoutScore = officers.length > 0 ? Math.round((totalLeaves / officers.length) * 100) : 0;
+      const headcount = officers.length;
+      const onLongLeave = longLeaveToday.size;
+      const expectedToday = Math.max(0, headcount - onLongLeave - markedLeave);
+
+      // --- distribution --------------------------------------------------
+      const tally = (rows: any[], field: string) => {
+        const m = new Map<string, number>();
+        for (const r of rows) {
+          const k = String(r[field] || '').trim() || 'Unassigned';
+          m.set(k, (m.get(k) || 0) + 1);
+        }
+        return [...m.entries()]
+          .map(([name, count]) => ({ name, count }))
+          .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+      };
+
+      const byPost = tally(officers, 'post');
+      const departments = tally(officers, 'department').map((d) => {
+        const staff = officers.filter(
+          (o: any) => (String(o.department || '').trim() || 'Unassigned') === d.name,
+        );
+        let deptPresent = 0;
+        let deptLeave = 0;
+        let deptLong = 0;
+        for (const o of staff) {
+          const key = String(o.id);
+          if (longLeaveToday.has(key)) { deptLong += 1; continue; }
+          const status = attendanceByOfficer.get(key);
+          if (active(status || '') || status === 'HALF_DAY') deptPresent += 1;
+          else if (status === 'LEAVE' || onLeaveToday.has(key)) deptLeave += 1;
+        }
+        const expected = Math.max(0, d.count - deptLong - deptLeave);
+        return {
+          name: d.name,
+          headcount: d.count,
+          present: deptPresent,
+          on_leave: deptLeave,
+          long_leave: deptLong,
+          coverage: expected > 0 ? Math.round((deptPresent / expected) * 100) : null,
+        };
+      });
+
+      // --- 30-day attendance trend, working days only ---------------------
+      const byDate = new Map<string, { worked: number; recorded: number }>();
+      for (const row of trendRows) {
+        const key = toDateKey(row.date);
+        if (!calendar.isWorkingDay(key)) continue;
+        const bucket = byDate.get(key) || { worked: 0, recorded: 0 };
+        bucket.recorded += 1;
+        if (active(row.status) || row.status === 'HALF_DAY') bucket.worked += 1;
+        byDate.set(key, bucket);
+      }
+      const trend = [...byDate.entries()]
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([date, v]) => ({
+          date,
+          day: new Date(`${date}T00:00:00`).toLocaleDateString('en-US', { weekday: 'short' }),
+          present: v.worked,
+          rate: headcount > 0 ? Math.round((v.worked / headcount) * 100) : 0,
+        }));
+
+      const avgRate = trend.length
+        ? Math.round(trend.reduce((a, t) => a + t.rate, 0) / trend.length)
+        : 0;
+
+      // --- long leave roster, split into away now and starting soon -------
+      const dayCount = (from: string, to: string) =>
+        Math.max(0, Math.round((new Date(`${to}T00:00:00`).getTime() - new Date(`${from}T00:00:00`).getTime()) / 86400000));
+
+      const longLeaveRoster = longLeaves.map((l: any) => {
+        const start = toDateKey(l.start_date);
+        const end = toDateKey(l.end_date);
+        const returnDate = new Date(`${end}T00:00:00`);
+        returnDate.setDate(returnDate.getDate() + 1);
+        return {
+          id: l.id,
+          officer_id: l.officer_id,
+          officer_name: l.officer_name,
+          officer_post: l.officer_post,
+          officer_department: l.officer_department,
+          officer_pic: l.officer_pic,
+          type: l.type,
+          start_date: start,
+          end_date: end,
+          reference_no: l.reference_no,
+          status: start <= today ? 'AWAY' : 'UPCOMING',
+          returns_on: toDateKey(returnDate),
+          days_remaining: start <= today ? dayCount(today, end) : null,
+          starts_in_days: start > today ? dayCount(today, start) : null,
+          total_days: dayCount(start, end) + 1,
+        };
+      });
 
       res.json({
         status: 'success',
         data: {
-          efficiency,
-          depts: deptsStats,
-          burnoutScore: Math.min(burnoutScore * 10 + 20, 100),
-          divisionalVelocity: 1.24,
-          bottleneck: deptsStats.sort((a, b) => b.risk - a.risk)[0]?.name || 'None'
-        }
+          date: today,
+          headcount: {
+            total: headcount,
+            on_long_leave: onLongLeave,
+            active: headcount - onLongLeave,
+            field: officers.filter((o: any) => String(o.work_type || '').toUpperCase() === 'FIELD').length,
+            office: officers.filter((o: any) => String(o.work_type || '').toUpperCase() !== 'FIELD').length,
+          },
+          today: {
+            is_working_day: isWorkingToday,
+            holiday_name: isWorkingToday ? null : calendar.holidayName(today),
+            present,
+            half_day: halfDay,
+            on_leave: markedLeave,
+            on_long_leave: onLongLeave,
+            no_record: noRecord,
+            expected: expectedToday,
+            attendance_rate: expectedToday > 0 ? Math.round((present / expectedToday) * 100) : null,
+          },
+          tomorrow: {
+            date: tomorrow,
+            is_working_day: isWorkingTomorrow,
+            holiday_name: isWorkingTomorrow ? null : calendar.holidayName(tomorrow),
+            on_leave: onLeaveTomorrow.size,
+            on_long_leave: longLeaveTomorrow.size,
+            expected_present: isWorkingTomorrow
+              ? Math.max(0, headcount - longLeaveTomorrow.size - onLeaveTomorrow.size)
+              : 0,
+            returning: longLeaveRoster.filter((l: any) => l.returns_on === tomorrow).length,
+          },
+          by_department: departments,
+          by_post: byPost,
+          long_leave: longLeaveRoster,
+          on_leave_today: leavesToday.map((l: any) => ({
+            officer_id: l.officer_id,
+            name: l.officer_name,
+            post: l.officer_post,
+            department: l.officer_department,
+            type: l.type,
+            until: toDateKey(l.end_date),
+          })),
+          pending_approvals: Number((pending as any)?.n || 0),
+          trend,
+          average_rate_30d: avgRate,
+        },
       });
     } catch (error: any) {
       res.status(500).json({ status: 'error', message: error.message });
     }
   });
+
 
   // The six executive posts the public display tracks, in the order it shows
   // them. dashboard_status holds one row per slot with the officer assigned to
@@ -3035,6 +3228,7 @@ async function startServer() {
   interface LeaveCalendar {
     isWorkingDay: (dateKey: string) => boolean;
     isHoliday: (dateKey: string) => boolean;
+    holidayName: (dateKey: string) => string | null;
     workingDaysIn: (start: any, end: any) => string[];
   }
 
@@ -3065,9 +3259,15 @@ async function startServer() {
     // The holidays table is small (a few dozen rows per year), so load it once
     // rather than querying per leave request.
     let holidays = new Set<string>();
+    // Named so a screen can say which holiday it is, not just that one exists.
+    const holidayNames = new Map<string, string>();
     try {
-      const rows = await db('holidays').select('date');
-      holidays = new Set(rows.map((r: any) => toDateKey(r.date)));
+      const rows = await db('holidays').select('date', 'name');
+      for (const r of rows) {
+        const key = toDateKey(r.date);
+        holidays.add(key);
+        if (r.name) holidayNames.set(key, String(r.name));
+      }
     } catch {
       // No holidays table yet; weekends alone still apply.
     }
@@ -3082,6 +3282,7 @@ async function startServer() {
     return {
       isWorkingDay,
       isHoliday: (dateKey: string) => holidays.has(dateKey),
+      holidayName: (dateKey: string) => holidayNames.get(dateKey) ?? null,
       workingDaysIn: (start: any, end: any) => eachDateKey(start, end).filter(isWorkingDay),
     };
   };
@@ -3136,7 +3337,7 @@ async function startServer() {
 
     const calendar = await loadLeaveCalendar();
 
-    const [approvedLeaves, attendanceLeaves, attendedDays, officerRow, horizon, floor] = await Promise.all([
+    const [approvedLeaves, longLeaves, attendanceLeaves, attendedDays, officerRow, horizon, floor] = await Promise.all([
       db('leaves')
         .where({ officer_id: officerId, status: 'APPROVED' })
         .where(function () {
@@ -3144,6 +3345,12 @@ async function startServer() {
           this.whereBetween('start_date', [startOfYear, endOfYear])
             .orWhereBetween('end_date', [startOfYear, endOfYear]);
         }),
+      // Maternity, medical, study and the rest are recorded by the office and
+      // are not drawn from the casual/vacation allowance.
+      db('long_term_leaves')
+        .where('officer_id', officerId)
+        .where('start_date', '<=', endOfYear)
+        .where('end_date', '>=', startOfYear),
       db('attendance')
         .where('officer_id', officerId)
         .whereBetween('date', [startOfYear, endOfYear])
@@ -3176,6 +3383,24 @@ async function startServer() {
     const coveredDates = new Set<string>();
     const shortLeavesPerMonth: Record<string, number> = {};
 
+    /**
+     * Days the officer was formally away on long leave. They are neither
+     * worked nor charged: an officer on three months' maternity leave would
+     * otherwise be billed every working day of it as casual leave, because no
+     * scan exists for any of them.
+     */
+    const longLeaveDates = new Set<string>();
+    let longLeaveDays = 0;
+    for (const spell of longLeaves) {
+      for (const k of calendar.workingDaysIn(toDateKey(spell.start_date), toDateKey(spell.end_date))) {
+        if (k < startOfYear || k > endOfYear) continue;
+        if (!longLeaveDates.has(k)) {
+          longLeaveDates.add(k);
+          longLeaveDays += 1;
+        }
+      }
+    }
+
     for (const leave of approvedLeaves) {
       // Only working days inside this year count against this year's
       // entitlement: weekends and public holidays inside a leave are free.
@@ -3207,6 +3432,7 @@ async function startServer() {
     for (const row of attendanceLeaves) {
       const key = toDateKey(row.date);
       if (coveredDates.has(key)) continue; // already charged via an approved request
+      if (longLeaveDates.has(key)) continue; // formally away; costs no entitlement
       if (!calendar.isWorkingDay(key)) continue; // a weekend or holiday costs nothing
       if (row.status === 'LEAVE') {
         balances.casual += 1;
@@ -3250,7 +3476,12 @@ async function startServer() {
         // Weekends and public holidays are not working days; a day already
         // charged through an approved request must not be charged twice; and a
         // day with any attendance record is accounted for by status above.
-        if (calendar.isWorkingDay(key) && !coveredDates.has(key) && !attendedKeys.has(key)) {
+        if (
+          calendar.isWorkingDay(key) &&
+          !coveredDates.has(key) &&
+          !longLeaveDates.has(key) &&
+          !attendedKeys.has(key)
+        ) {
           absentDays += 1;
         }
         cursor.setDate(cursor.getDate() + 1);
@@ -3259,6 +3490,12 @@ async function startServer() {
     balances.casual += absentDays;
     (balances as any).absent_days = absentDays;
     (balances as any).counted_up_to = absenceLimit;
+    (balances as any).long_leave_days = longLeaveDays;
+    (balances as any).long_leave_spells = longLeaves.map((l: any) => ({
+      type: l.type,
+      start_date: toDateKey(l.start_date),
+      end_date: toDateKey(l.end_date),
+    }));
 
     // Short leave is its own allowance: two per month, and it does not convert
     // into casual or vacation at any rate. The monthly limit is enforced where
@@ -3378,6 +3615,129 @@ async function startServer() {
       const officer_id = requested || req.user.id;
       const balances = await computeLeaveBalances(officer_id);
       res.json({ status: 'success', data: balances });
+    } catch (error: any) {
+      res.status(500).json({ status: 'error', message: error.message });
+    }
+  });
+
+  // --- Long-term leave -----------------------------------------------------
+
+  apiRouter.get('/long-term-leaves', authenticate, async (req: any, res) => {
+    try {
+      const { officer_id, active_on, year } = req.query;
+      const q = db('long_term_leaves as l')
+        .leftJoin('officers as o', 'o.id', 'l.officer_id')
+        .select(
+          'l.*',
+          'o.name as officer_name',
+          'o.post as officer_post',
+          'o.department as officer_department',
+          'o.profile_pic as officer_pic',
+        )
+        .orderBy('l.start_date', 'desc');
+
+      if (officer_id) q.where('l.officer_id', officer_id);
+      if (active_on) q.where('l.start_date', '<=', String(active_on)).andWhere('l.end_date', '>=', String(active_on));
+      if (year) {
+        q.andWhere(function () {
+          this.whereBetween('l.start_date', [`${year}-01-01`, `${year}-12-31`])
+            .orWhereBetween('l.end_date', [`${year}-01-01`, `${year}-12-31`]);
+        });
+      }
+
+      const rows = await q;
+      res.json({ status: 'success', data: rows });
+    } catch (error: any) {
+      res.status(500).json({ status: 'error', message: error.message });
+    }
+  });
+
+  apiRouter.post('/long-term-leaves', authenticate, requireRole(...LONG_LEAVE_MANAGER_ROLES), async (req: any, res) => {
+    try {
+      const { officer_id, type, start_date, end_date, reference_no, remarks } = req.body;
+      if (!officer_id || !type || !start_date || !end_date) {
+        return res.status(400).json({ status: 'error', message: 'officer_id, type, start_date and end_date are all required' });
+      }
+      const kind = String(type).toUpperCase();
+      if (!LONG_LEAVE_TYPES.includes(kind)) {
+        return res.status(400).json({ status: 'error', message: `type must be one of ${LONG_LEAVE_TYPES.join(', ')}` });
+      }
+      const start = toDateKey(start_date);
+      const end = toDateKey(end_date);
+      if (!start || !end || end < start) {
+        return res.status(400).json({ status: 'error', message: 'end_date must fall on or after start_date' });
+      }
+
+      const officer = await db('officers').where('id', officer_id).first('id', 'name');
+      if (!officer) return res.status(404).json({ status: 'error', message: 'Officer not found' });
+
+      // Two overlapping long leaves for one officer is a double entry, not a
+      // real situation, and it would be counted twice everywhere downstream.
+      const clash = await db('long_term_leaves')
+        .where('officer_id', officer_id)
+        .where('start_date', '<=', end)
+        .where('end_date', '>=', start)
+        .first();
+      if (clash) {
+        return res.status(409).json({
+          status: 'error',
+          message: `${officer.name} already has ${clash.type} leave recorded from ${toDateKey(clash.start_date)} to ${toDateKey(clash.end_date)}`,
+        });
+      }
+
+      const [id] = await db('long_term_leaves').insert({
+        officer_id,
+        type: kind,
+        start_date: start,
+        end_date: end,
+        reference_no: reference_no ? String(reference_no).slice(0, 100) : null,
+        remarks: remarks ? String(remarks).slice(0, 1000) : null,
+        created_by: String(req.user?.username || req.user?.id || ''),
+      });
+      const row = await db('long_term_leaves').where('id', id).first();
+      res.json({ status: 'success', data: row });
+    } catch (error: any) {
+      res.status(500).json({ status: 'error', message: error.message });
+    }
+  });
+
+  apiRouter.put('/long-term-leaves/:id', authenticate, requireRole(...LONG_LEAVE_MANAGER_ROLES), async (req: any, res) => {
+    try {
+      const existing = await db('long_term_leaves').where('id', req.params.id).first();
+      if (!existing) return res.status(404).json({ status: 'error', message: 'Record not found' });
+
+      const patch: any = {};
+      if (req.body.type !== undefined) {
+        const kind = String(req.body.type).toUpperCase();
+        if (!LONG_LEAVE_TYPES.includes(kind)) {
+          return res.status(400).json({ status: 'error', message: `type must be one of ${LONG_LEAVE_TYPES.join(', ')}` });
+        }
+        patch.type = kind;
+      }
+      if (req.body.start_date !== undefined) patch.start_date = toDateKey(req.body.start_date);
+      if (req.body.end_date !== undefined) patch.end_date = toDateKey(req.body.end_date);
+      if (req.body.reference_no !== undefined) patch.reference_no = req.body.reference_no ? String(req.body.reference_no).slice(0, 100) : null;
+      if (req.body.remarks !== undefined) patch.remarks = req.body.remarks ? String(req.body.remarks).slice(0, 1000) : null;
+
+      const start = patch.start_date || toDateKey(existing.start_date);
+      const end = patch.end_date || toDateKey(existing.end_date);
+      if (end < start) {
+        return res.status(400).json({ status: 'error', message: 'end_date must fall on or after start_date' });
+      }
+
+      await db('long_term_leaves').where('id', req.params.id).update(patch);
+      const row = await db('long_term_leaves').where('id', req.params.id).first();
+      res.json({ status: 'success', data: row });
+    } catch (error: any) {
+      res.status(500).json({ status: 'error', message: error.message });
+    }
+  });
+
+  apiRouter.delete('/long-term-leaves/:id', authenticate, requireRole(...LONG_LEAVE_MANAGER_ROLES), async (req, res) => {
+    try {
+      const n = await db('long_term_leaves').where('id', req.params.id).del();
+      if (!n) return res.status(404).json({ status: 'error', message: 'Record not found' });
+      res.json({ status: 'success', data: { id: req.params.id } });
     } catch (error: any) {
       res.status(500).json({ status: 'error', message: error.message });
     }

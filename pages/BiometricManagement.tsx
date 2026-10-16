@@ -5,6 +5,21 @@ import { api } from '../service/api';
 import { translations, TranslationKey } from '../service/i18n';
 import { Skeleton } from '../components/Skeleton';
 
+/**
+ * The six kinds of long absence the office records. These are months-long
+ * spells approved outside the ordinary leave form, and none of them is drawn
+ * from the 21 casual / 21 vacation allowance.
+ */
+const LONG_LEAVE_TYPES: { id: string; en: string; si: string; icon: string; chip: string }[] = [
+  { id: 'MATERNITY', en: 'Maternity', si: 'ප්‍රසූත',  icon: '👶', chip: 'bg-pink-50 text-pink-700 border-pink-200' },
+  { id: 'MEDICAL',   en: 'Medical',   si: 'වෛද්‍ය',   icon: '🏥', chip: 'bg-rose-50 text-rose-700 border-rose-200' },
+  { id: 'STUDY',     en: 'Study',     si: 'අධ්‍යයන',  icon: '🎓', chip: 'bg-violet-50 text-violet-700 border-violet-200' },
+  { id: 'FOREIGN',   en: 'Foreign',   si: 'විදේශ',    icon: '✈️', chip: 'bg-sky-50 text-sky-700 border-sky-200' },
+  { id: 'LOCAL',     en: 'Local',     si: 'දේශීය',    icon: '🏠', chip: 'bg-teal-50 text-teal-700 border-teal-200' },
+  { id: 'SPECIAL',   en: 'Special',   si: 'විශේෂ',    icon: '⭐', chip: 'bg-amber-50 text-amber-700 border-amber-200' },
+];
+
+
 interface Props {
   user: Officer;
   lang: 'EN' | 'SI';
@@ -62,9 +77,20 @@ const BiometricManagement: React.FC<Props> = ({ user, lang }) => {
   // Filters
   const [filterTerm, setFilterTerm] = useState('');
   const [filterDept, setFilterDept] = useState('ALL');
-  const [viewMode, setViewMode] = useState<'LOGS' | 'REGISTRY_GAPS' | 'LEAVE_MAP' | 'INSTITUTIONAL_MAP' | 'HOLIDAYS'>('LOGS');
+  const [viewMode, setViewMode] = useState<'LOGS' | 'REGISTRY_GAPS' | 'LEAVE_MAP' | 'INSTITUTIONAL_MAP' | 'HOLIDAYS' | 'LONG_LEAVE'>('LOGS');
   const [holidays, setHolidays] = useState<any[]>([]);
   const [newHoliday, setNewHoliday] = useState({ date: '', name: '' });
+
+  // Long-term leave: months-long absences recorded by the office rather than
+  // requested by the officer, and not drawn from the casual/vacation allowance.
+  const [longLeaves, setLongLeaves] = useState<any[]>([]);
+  const [longLeaveForm, setLongLeaveForm] = useState({
+    officer_id: '', type: 'MATERNITY', start_date: '', end_date: '', reference_no: '', remarks: '',
+  });
+  const [editingLongLeave, setEditingLongLeave] = useState<any>(null);
+  const [longLeaveSaving, setLongLeaveSaving] = useState(false);
+  const [longLeaveError, setLongLeaveError] = useState<string | null>(null);
+  const [longLeaveFilter, setLongLeaveFilter] = useState<'CURRENT' | 'ALL'>('CURRENT');
   const [mapSearch, setMapSearch] = useState('');
 
   const [isManualModalOpen, setIsManualModalOpen] = useState(false);
@@ -93,6 +119,8 @@ const BiometricManagement: React.FC<Props> = ({ user, lang }) => {
       loadMonthlyData();
     } else if (viewMode === 'HOLIDAYS') {
       loadHolidays();
+    } else if (viewMode === 'LONG_LEAVE') {
+      loadLongLeaves();
     } else {
       loadInitialData();
     }
@@ -124,6 +152,86 @@ const BiometricManagement: React.FC<Props> = ({ user, lang }) => {
     try {
       await api.deleteHoliday(id);
       loadHolidays();
+    } catch (e: any) { alert(e.message); }
+  };
+
+  const loadLongLeaves = async () => {
+    setIsLoading(true);
+    try {
+      const [records, people] = await Promise.all([
+        api.getLongTermLeaves(),
+        staff.length ? Promise.resolve(staff) : api.getAllStaff(),
+      ]);
+      setLongLeaves(Array.isArray(records) ? records : []);
+      if (!staff.length && Array.isArray(people)) setStaff(people as any);
+    } catch (e) {
+      console.error('Long-term leave load error:', e);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const visibleLongLeaves = useMemo(() => {
+    if (longLeaveFilter === 'ALL') return longLeaves;
+    const today = new Date().toLocaleDateString('en-CA');
+    return longLeaves.filter((r: any) => String(r.end_date).slice(0, 10) >= today);
+  }, [longLeaves, longLeaveFilter]);
+
+  const resetLongLeaveForm = () => {
+    setEditingLongLeave(null);
+    setLongLeaveError(null);
+    setLongLeaveForm({ officer_id: '', type: 'MATERNITY', start_date: '', end_date: '', reference_no: '', remarks: '' });
+  };
+
+  const handleSaveLongLeave = async () => {
+    const { officer_id, type, start_date, end_date } = longLeaveForm;
+    if (!officer_id || !type || !start_date || !end_date) {
+      setLongLeaveError(t('නිලධාරියා, වර්ගය සහ දින දෙකම අවශ්‍යයි.', 'Officer, type and both dates are required.'));
+      return;
+    }
+    if (end_date < start_date) {
+      setLongLeaveError(t('අවසන් දිනය ආරම්භක දිනයට පෙර විය නොහැක.', 'The end date cannot fall before the start date.'));
+      return;
+    }
+    setLongLeaveSaving(true);
+    setLongLeaveError(null);
+    try {
+      if (editingLongLeave) {
+        await api.updateLongTermLeave(editingLongLeave.id, longLeaveForm);
+      } else {
+        await api.createLongTermLeave(longLeaveForm);
+      }
+      resetLongLeaveForm();
+      await loadLongLeaves();
+    } catch (e: any) {
+      setLongLeaveError(e?.message || t('සුරැකීම අසාර්ථකයි.', 'Could not save the record.'));
+    } finally {
+      setLongLeaveSaving(false);
+    }
+  };
+
+  const handleEditLongLeave = (record: any) => {
+    setEditingLongLeave(record);
+    setLongLeaveError(null);
+    setLongLeaveForm({
+      officer_id: String(record.officer_id),
+      type: record.type,
+      start_date: String(record.start_date).slice(0, 10),
+      end_date: String(record.end_date).slice(0, 10),
+      reference_no: record.reference_no || '',
+      remarks: record.remarks || '',
+    });
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleDeleteLongLeave = async (record: any) => {
+    const who = record.officer_name || t('මෙම නිලධාරියා', 'this officer');
+    if (!window.confirm(t(`${who} සඳහා වන මෙම නිවාඩු වාර්තාව ඉවත් කරන්නද?`,
+                          `Remove this leave record for ${who}? Their attendance for those dates will be recalculated.`))) return;
+    try {
+      await api.deleteLongTermLeave(record.id);
+      if (editingLongLeave?.id === record.id) resetLongLeaveForm();
+      await loadLongLeaves();
     } catch (e: any) { alert(e.message); }
   };
 
@@ -390,6 +498,7 @@ const BiometricManagement: React.FC<Props> = ({ user, lang }) => {
                   <button onClick={() => setViewMode('INSTITUTIONAL_MAP')} className={`px-6 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${viewMode === 'INSTITUTIONAL_MAP' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-400 hover:text-indigo-600'}`}>Monthly Map</button>
                   <button onClick={() => setViewMode('LEAVE_MAP')} className={`px-6 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${viewMode === 'LEAVE_MAP' ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20' : 'text-slate-400 hover:text-blue-500'}`}>Registry Map</button>
                   <button onClick={() => setViewMode('HOLIDAYS')} className={`px-6 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${viewMode === 'HOLIDAYS' ? 'bg-yellow-500 text-white shadow-lg shadow-yellow-500/20' : 'text-slate-400 hover:text-yellow-600'}`}>Holidays</button>
+                  <button onClick={() => setViewMode('LONG_LEAVE')} className={`px-6 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${viewMode === 'LONG_LEAVE' ? 'bg-violet-600 text-white shadow-lg shadow-violet-600/20' : 'text-slate-400 hover:text-violet-600'}`}>Long Leave</button>
                   <button onClick={() => setViewMode('REGISTRY_GAPS')} className={`px-6 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${viewMode === 'REGISTRY_GAPS' ? 'bg-red-500 text-white shadow-lg shadow-red-500/20' : 'text-slate-400 hover:text-red-500'}`}>Gaps ({stats.missing})</button>
                </div>
              </>
@@ -397,7 +506,7 @@ const BiometricManagement: React.FC<Props> = ({ user, lang }) => {
         </div>
       </div>
 
-      {isManagement && viewMode !== 'INSTITUTIONAL_MAP' && (
+      {isManagement && viewMode !== 'INSTITUTIONAL_MAP' && viewMode !== 'LONG_LEAVE' && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
           {[
             { label: 'Hardware Hits', val: stats.totalHits, icon: '⚡', color: 'text-slate-900' },
@@ -555,6 +664,10 @@ const BiometricManagement: React.FC<Props> = ({ user, lang }) => {
 
       {viewMode !== 'INSTITUTIONAL_MAP' && (
         <div className="bg-white rounded-[3.5rem] shadow-sm border border-slate-100 overflow-hidden">
+          {/* A date, a hardware-ID search and a section filter say nothing about
+              a leave record that spans months, so this strip stays out of the
+              long-leave and holiday views. */}
+          {viewMode !== 'LONG_LEAVE' && viewMode !== 'HOLIDAYS' && (
           <header className="p-8 border-b bg-slate-50 flex flex-wrap items-center gap-6">
             <div className="flex flex-col gap-2">
                 <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Archive Search</span>
@@ -575,6 +688,7 @@ const BiometricManagement: React.FC<Props> = ({ user, lang }) => {
                 </select>
             </div>
           </header>
+          )}
 
           <div className="overflow-x-auto min-h-[400px]">
             {viewMode === 'LOGS' ? (
@@ -651,6 +765,242 @@ const BiometricManagement: React.FC<Props> = ({ user, lang }) => {
                   ))}
                 </tbody>
               </table>
+            ) : viewMode === 'LONG_LEAVE' ? (
+              <div className="p-5 sm:p-10 space-y-8">
+                {/* Record a spell */}
+                <div className="bg-slate-50 p-5 sm:p-8 rounded-[2rem] sm:rounded-[2.5rem] border border-slate-100">
+                  <div className="flex items-center justify-between gap-3 mb-5 flex-wrap">
+                    <h4 className="text-sm font-black text-slate-900 uppercase tracking-widest">
+                      {editingLongLeave
+                        ? t('නිවාඩු වාර්තාව සංස්කරණය', 'Edit Leave Record')
+                        : t('දිගුකාලීන නිවාඩුවක් සටහන් කරන්න', 'Record Long-Term Leave')}
+                    </h4>
+                    {editingLongLeave && (
+                      <button
+                        onClick={resetLongLeaveForm}
+                        className="px-4 py-2 min-h-[40px] bg-white border border-slate-200 text-slate-600 rounded-xl text-[10px] font-black uppercase tracking-widest"
+                      >
+                        {t('අලුත් එකක්', 'New record')}
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                    <div className="space-y-1.5 xl:col-span-2">
+                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">
+                        {t('නිලධාරියා', 'Officer')}
+                      </label>
+                      <select
+                        value={longLeaveForm.officer_id}
+                        onChange={e => setLongLeaveForm(prev => ({ ...prev, officer_id: e.target.value }))}
+                        className="w-full p-4 min-h-[44px] bg-white border border-slate-200 rounded-2xl font-bold text-xs outline-none shadow-sm"
+                      >
+                        <option value="">— {t('නිලධාරියෙකු තෝරන්න', 'Select an officer')} —</option>
+                        {[...staff]
+                          .sort((a: any, b: any) => String(a.name).localeCompare(String(b.name)))
+                          .map((o: any) => (
+                            <option key={o.id} value={String(o.id)}>
+                              {o.name}{o.department ? ` — ${o.department}` : ''}
+                            </option>
+                          ))}
+                      </select>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">
+                        {t('නිවාඩු වර්ගය', 'Leave Type')}
+                      </label>
+                      <select
+                        value={longLeaveForm.type}
+                        onChange={e => setLongLeaveForm(prev => ({ ...prev, type: e.target.value }))}
+                        className="w-full p-4 min-h-[44px] bg-white border border-slate-200 rounded-2xl font-bold text-xs outline-none shadow-sm"
+                      >
+                        {LONG_LEAVE_TYPES.map(k => (
+                          <option key={k.id} value={k.id}>{k.icon} {t(k.si, k.en)}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">
+                        {t('ආරම්භක දිනය', 'From')}
+                      </label>
+                      <input
+                        type="date"
+                        value={longLeaveForm.start_date}
+                        onChange={e => setLongLeaveForm(prev => ({ ...prev, start_date: e.target.value }))}
+                        className="w-full p-4 min-h-[44px] bg-white border border-slate-200 rounded-2xl font-bold text-xs outline-none shadow-sm"
+                      />
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">
+                        {t('අවසන් දිනය', 'To')}
+                      </label>
+                      <input
+                        type="date"
+                        value={longLeaveForm.end_date}
+                        min={longLeaveForm.start_date || undefined}
+                        onChange={e => setLongLeaveForm(prev => ({ ...prev, end_date: e.target.value }))}
+                        className="w-full p-4 min-h-[44px] bg-white border border-slate-200 rounded-2xl font-bold text-xs outline-none shadow-sm"
+                      />
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">
+                        {t('ලිපි අංකය', 'Reference No.')}
+                      </label>
+                      <input
+                        type="text"
+                        placeholder={t('අත්‍යවශ්‍ය නොවේ', 'Optional')}
+                        value={longLeaveForm.reference_no}
+                        onChange={e => setLongLeaveForm(prev => ({ ...prev, reference_no: e.target.value }))}
+                        className="w-full p-4 min-h-[44px] bg-white border border-slate-200 rounded-2xl font-bold text-xs outline-none shadow-sm"
+                      />
+                    </div>
+
+                    <div className="space-y-1.5 md:col-span-2 xl:col-span-3">
+                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">
+                        {t('සටහන්', 'Remarks')}
+                      </label>
+                      <input
+                        type="text"
+                        placeholder={t('අත්‍යවශ්‍ය නොවේ', 'Optional')}
+                        value={longLeaveForm.remarks}
+                        onChange={e => setLongLeaveForm(prev => ({ ...prev, remarks: e.target.value }))}
+                        className="w-full p-4 min-h-[44px] bg-white border border-slate-200 rounded-2xl font-bold text-xs outline-none shadow-sm"
+                      />
+                    </div>
+                  </div>
+
+                  {longLeaveError && (
+                    <p className="mt-4 px-4 py-3 bg-rose-50 border border-rose-200 rounded-2xl text-[11px] font-bold text-rose-700">
+                      {longLeaveError}
+                    </p>
+                  )}
+
+                  <div className="flex items-center gap-3 mt-5 flex-wrap">
+                    <button
+                      onClick={handleSaveLongLeave}
+                      disabled={longLeaveSaving}
+                      className="px-6 py-4 min-h-[44px] bg-slate-900 disabled:opacity-50 text-white rounded-2xl font-black uppercase text-[10px] tracking-widest shadow-xl hover:bg-violet-600 transition-all"
+                    >
+                      {longLeaveSaving
+                        ? t('සුරකිමින්…', 'Saving…')
+                        : editingLongLeave ? t('වෙනස්කම් සුරකින්න', 'Save changes') : t('නිවාඩුව සටහන් කරන්න', 'Record leave')}
+                    </button>
+                    <p className="text-[10px] font-bold text-slate-400 leading-relaxed max-w-md">
+                      {t('මෙම දිනවල අනියම් හෝ විවේක නිවාඩු ගණනයට නොගැනේ.',
+                         'These dates are not charged against the officer\u2019s casual or vacation allowance, and no absence is inferred from the missing scans.')}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Recorded spells */}
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between gap-3 flex-wrap">
+                    <h4 className="text-sm font-black text-slate-900 uppercase tracking-widest ml-1">
+                      {t('සටහන් කළ නිවාඩු', 'Recorded Leave')}
+                    </h4>
+                    <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200">
+                      {([['CURRENT', t('වත්මන්', 'Current & upcoming')], ['ALL', t('සියල්ල', 'All')]] as const).map(([k, label]) => (
+                        <button
+                          key={k}
+                          onClick={() => setLongLeaveFilter(k as any)}
+                          className={`px-4 py-2 min-h-[36px] rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${
+                            longLeaveFilter === k ? 'bg-slate-900 text-white' : 'text-slate-500'
+                          }`}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {isLoading ? (
+                    <Skeleton className="h-24 w-full rounded-3xl" />
+                  ) : visibleLongLeaves.length === 0 ? (
+                    <div className="p-10 text-center border-2 border-dashed border-slate-100 rounded-3xl">
+                      <p className="text-[11px] font-black text-slate-400 uppercase tracking-widest">
+                        {longLeaveFilter === 'CURRENT'
+                          ? t('දැනට දිගුකාලීන නිවාඩු නොමැත', 'Nobody is on long-term leave right now')
+                          : t('වාර්තා නොමැත', 'No records yet')}
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                      {visibleLongLeaves.map((r: any) => {
+                        const meta = LONG_LEAVE_TYPES.find(k => k.id === r.type);
+                        const start = String(r.start_date).slice(0, 10);
+                        const end = String(r.end_date).slice(0, 10);
+                        const todayKey = new Date().toLocaleDateString('en-CA');
+                        const state = end < todayKey ? 'PAST' : start > todayKey ? 'UPCOMING' : 'AWAY';
+                        return (
+                          <div key={r.id} className="p-5 bg-white border border-slate-100 rounded-3xl hover:shadow-lg transition-all">
+                            <div className="flex items-start gap-3">
+                              <div className="w-11 h-11 rounded-full bg-slate-100 overflow-hidden shrink-0 flex items-center justify-center">
+                                {r.officer_pic
+                                  ? <img src={r.officer_pic} alt="" className="w-full h-full object-cover" />
+                                  : <span className="text-[10px] font-black text-slate-400">
+                                      {String(r.officer_name || '?').split(/\s+/).slice(0, 2).map((x: string) => x[0]).join('').toUpperCase()}
+                                    </span>}
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <p className="text-xs font-black text-slate-900 truncate">{r.officer_name}</p>
+                                <p className="text-[10px] font-bold text-slate-400 truncate">
+                                  {r.officer_post || r.officer_department || '—'}
+                                </p>
+                              </div>
+                              <span className={`shrink-0 px-2.5 py-1 rounded-lg text-[8px] font-black uppercase tracking-widest border ${
+                                state === 'AWAY' ? 'bg-violet-50 text-violet-700 border-violet-200'
+                                : state === 'UPCOMING' ? 'bg-blue-50 text-blue-700 border-blue-200'
+                                : 'bg-slate-50 text-slate-400 border-slate-200'
+                              }`}>
+                                {state === 'AWAY' ? t('ඉවත්ව', 'Away')
+                                  : state === 'UPCOMING' ? t('ඉදිරියේදී', 'Upcoming')
+                                  : t('අවසන්', 'Completed')}
+                              </span>
+                            </div>
+
+                            <div className="flex items-center gap-2 mt-4 flex-wrap">
+                              <span className={`px-2.5 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest border ${meta?.chip || 'bg-slate-50 text-slate-600 border-slate-200'}`}>
+                                {meta?.icon} {t(meta?.si || r.type, meta?.en || r.type)}
+                              </span>
+                              <span className="text-[10px] font-black text-slate-600 tabular-nums">
+                                {start} → {end}
+                              </span>
+                              {r.reference_no && (
+                                <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">
+                                  #{r.reference_no}
+                                </span>
+                              )}
+                            </div>
+
+                            {r.remarks && (
+                              <p className="text-[10px] text-slate-500 mt-2.5 leading-relaxed">{r.remarks}</p>
+                            )}
+
+                            <div className="flex gap-2 mt-4 pt-4 border-t border-slate-50">
+                              <button
+                                onClick={() => handleEditLongLeave(r)}
+                                className="px-4 py-2.5 min-h-[40px] bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-[10px] font-black uppercase tracking-widest"
+                              >
+                                {t('සංස්කරණය', 'Edit')}
+                              </button>
+                              <button
+                                onClick={() => handleDeleteLongLeave(r)}
+                                className="px-4 py-2.5 min-h-[40px] bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-xl text-[10px] font-black uppercase tracking-widest"
+                              >
+                                {t('ඉවත් කරන්න', 'Remove')}
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
             ) : viewMode === 'HOLIDAYS' ? (
               <div className="p-10 space-y-8">
                 <div className="bg-slate-50 p-8 rounded-[2.5rem] border border-slate-100">

@@ -257,6 +257,17 @@ export class ApiClient {
   async saveDepartmentLayout(section: string, layouts: any[]) { return this.request<any>('/layout/mapping', { method: 'POST', body: JSON.stringify({ section, layouts }) }); }
   async getMyLeaves() { return this.request<LeaveRequest[]>('/leaves'); }
   async getLeaveBalances(officerId?: string | number) { return this.request<any>(`/leaves/balances${officerId ? `?officer_id=${officerId}` : ''}`); }
+  async getLongTermLeaves(params?: { officer_id?: string | number; active_on?: string; year?: number }) {
+    const q = new URLSearchParams();
+    if (params?.officer_id) q.set('officer_id', String(params.officer_id));
+    if (params?.active_on) q.set('active_on', params.active_on);
+    if (params?.year) q.set('year', String(params.year));
+    const qs = q.toString();
+    return this.request<any[]>(`/long-term-leaves${qs ? `?${qs}` : ''}`);
+  }
+  async createLongTermLeave(data: any) { return this.request<any>('/long-term-leaves', { method: 'POST', body: JSON.stringify(data) }); }
+  async updateLongTermLeave(id: string | number, data: any) { return this.request<any>(`/long-term-leaves/${id}`, { method: 'PUT', body: JSON.stringify(data) }); }
+  async deleteLongTermLeave(id: string | number) { return this.request<any>(`/long-term-leaves/${id}`, { method: 'DELETE' }); }
   async applyForLeave(data: any) { return this.request<any>('/leaves', { method: 'POST', body: JSON.stringify(data) }); }
   async getPendingLeaves() { return this.request<LeaveRequest[]>('/admin/leaves/pending'); }
   async updateLeaveStatus(id: string | number, status: string) { return this.request<any>(`/leaves/${id}/status`, { method: 'PUT', body: JSON.stringify({ status }) }); }

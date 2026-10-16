@@ -1,17 +1,12 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { 
-  AreaChart, 
-  Area, 
-  XAxis, 
-  YAxis, 
-  CartesianGrid, 
-  Tooltip, 
-  ResponsiveContainer, 
-  BarChart, 
-  Bar, 
-  Cell,
-  PieChart,
-  Pie
+import {
+  AreaChart,
+  Area,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
 } from 'recharts';
 import type { Officer } from '../types';
 import { api } from '../service/api';
@@ -24,308 +19,522 @@ interface Props {
   lang: 'EN' | 'SI';
 }
 
+const LONG_LEAVE_LABELS: Record<string, { en: string; si: string; chip: string }> = {
+  FOREIGN:   { en: 'Foreign',   si: 'විදේශ',      chip: 'bg-sky-50 text-sky-700 border-sky-200' },
+  LOCAL:     { en: 'Local',     si: 'දේශීය',      chip: 'bg-teal-50 text-teal-700 border-teal-200' },
+  MATERNITY: { en: 'Maternity', si: 'ප්‍රසූත',     chip: 'bg-pink-50 text-pink-700 border-pink-200' },
+  MEDICAL:   { en: 'Medical',   si: 'වෛද්‍ය',      chip: 'bg-rose-50 text-rose-700 border-rose-200' },
+  STUDY:     { en: 'Study',     si: 'අධ්‍යයන',     chip: 'bg-violet-50 text-violet-700 border-violet-200' },
+  SPECIAL:   { en: 'Special',   si: 'විශේෂ',      chip: 'bg-amber-50 text-amber-700 border-amber-200' },
+};
+
+const fmtDate = (key?: string | null) => {
+  if (!key) return '—';
+  const d = new Date(`${key}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return String(key);
+  return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+};
+
 const ExecutiveIntelligence: React.FC<Props> = ({ user, lang }) => {
-  const [snapshot, setSnapshot] = useState<any>(null);
+  const [snap, setSnap] = useState<any>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [aiReport, setAiReport] = useState<string | null>(null);
   const [isAiLoading, setIsAiLoading] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
+  const [postsOpen, setPostsOpen] = useState(false);
 
-  const t = (si: string, en: string) => lang === 'SI' ? si : en;
+  const t = (si: string, en: string) => (lang === 'SI' ? si : en);
 
-  useEffect(() => {
-    loadSnapshot();
-  }, []);
+  useEffect(() => { loadSnapshot(); }, []);
 
   const loadSnapshot = async () => {
     setIsLoading(true);
+    setError(null);
     try {
-      const today = new Date().toLocaleDateString('en-CA');
-      const data = await api.getIntelligenceSnapshot(today);
-      setSnapshot(data);
-      runAiAnalysis(data);
-    } catch (e) {
-      console.error("Failed to load divisional snapshot:", e);
+      const data = await api.getIntelligenceSnapshot(new Date().toLocaleDateString('en-CA'));
+      setSnap(data);
+    } catch (e: any) {
+      setError(e?.message || 'Could not load the division snapshot');
     } finally {
       setIsLoading(false);
     }
   };
 
-  const runAiAnalysis = async (data: any) => {
+  const runBriefing = async () => {
+    if (!snap) return;
     setIsAiLoading(true);
+    setAiReport(null);
     try {
-      const model = 'gemini-1.5-flash';
-      
-      const prompt = `Act as the Chief Strategic Advisor to a Sri Lankan Divisional Secretary. 
-      Review this real-time Divisional Operational Snapshot:
-      - Departments Analysis: ${JSON.stringify(data.depts)}
-      - Current Divisional Burnout Index: ${data.burnoutScore}/100
-      - Efficiency Trend (Last 5 Days): ${JSON.stringify(data.efficiency)}
-      - Identified Primary Bottleneck: ${data.bottleneck}
-      
-      Your Objective:
-      1. Perform a Critical Risk Assessment.
-      2. Predict service delivery impact for citizens in the coming 72 hours.
-      3. Recommend 3 specific 'Leadership Nudges' (staff re-allocation, task prioritization, or resource shifting).
-      
-      Output Requirements:
-      - Language: ${lang === 'SI' ? 'Sinhala' : 'English'}
-      - Tone: Authoritative, Executive, Insightful.
-      - Formatting: Use professional headers and concise bullet points.`;
-
       const text = await generateContent({
-        model,
-        contents: prompt,
-        config: {
-          thinkingConfig: { thinkingBudget: 2000 },
-          temperature: 0.1
-        }
+        contents:
+          'You are briefing the Divisional Secretary of a Sri Lankan Divisional Secretariat. ' +
+          'Write four short sentences of plain prose on what today’s figures mean and what needs attention. ' +
+          'Do not invent numbers beyond those given. Figures: ' +
+          JSON.stringify({
+            headcount: snap.headcount,
+            today: snap.today,
+            tomorrow: snap.tomorrow,
+            departments: snap.by_department,
+            long_leave: (snap.long_leave || []).map((l: any) => ({ type: l.type, status: l.status })),
+            pending_approvals: snap.pending_approvals,
+            average_rate_30d: snap.average_rate_30d,
+          }),
       });
-
-      setAiReport(text || "Diagnostic analysis temporarily unavailable.");
+      setAiReport(text);
     } catch (e: any) {
-      setAiReport(`Intelligence Engine Error: ${e.message}`);
+      setAiReport(`Briefing unavailable: ${e?.message || 'the AI service did not respond'}`);
     } finally {
       setIsAiLoading(false);
     }
   };
 
+  const awayNow = useMemo(
+    () => (snap?.long_leave || []).filter((l: any) => l.status === 'AWAY'),
+    [snap],
+  );
+  const upcoming = useMemo(
+    () => (snap?.long_leave || []).filter((l: any) => l.status === 'UPCOMING'),
+    [snap],
+  );
+
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-[#0a0e17] p-10 space-y-10">
-        <header className="flex justify-between items-end">
-           <Skeleton className="w-64 h-14 bg-white/5 rounded-2xl" />
-           <Skeleton className="w-40 h-10 bg-white/5 rounded-xl" />
-        </header>
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-           <div className="lg:col-span-4"><Skeleton className="h-[600px] bg-white/5 rounded-[3.5rem]" /></div>
-           <div className="lg:col-span-8 space-y-8">
-              <Skeleton className="h-96 bg-white/5 rounded-[4rem]" />
-              <Skeleton className="h-64 bg-white/5 rounded-[3.5rem]" />
-           </div>
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 space-y-6 pb-24">
+        <Skeleton className="h-24 w-full rounded-3xl" />
+        <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
+          {Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-28 rounded-3xl" />)}
         </div>
+        <Skeleton className="h-72 w-full rounded-3xl" />
       </div>
     );
   }
 
-  if (!snapshot) {
+  if (error || !snap) {
     return (
-      <div className="min-h-screen bg-[#0a0e17] p-10 flex flex-col items-center justify-center space-y-6">
-        <div className="text-6xl">⚠️</div>
-        <h2 className="text-2xl font-black text-white tracking-tighter">Intelligence Snapshot Unavailable</h2>
-        <p className="text-slate-500 max-w-md text-center">We couldn't load the divisional operational data. This might be due to a temporary server issue or missing database records.</p>
-        <button 
+      <div className="max-w-3xl mx-auto px-4 sm:px-6 py-20 text-center">
+        <p className="text-sm font-black text-rose-600 uppercase tracking-widest">
+          {t('දත්ත ලබා ගත නොහැක', 'Snapshot unavailable')}
+        </p>
+        <p className="text-xs text-slate-500 mt-2">{error}</p>
+        <button
           onClick={loadSnapshot}
-          className="px-8 py-3 bg-blue-600 text-white rounded-xl font-black uppercase text-[10px] tracking-widest hover:bg-blue-500 transition-all"
+          className="mt-6 px-5 py-3 min-h-[44px] bg-slate-900 text-white rounded-xl text-[10px] font-black uppercase tracking-widest"
         >
-          Retry Diagnostic
+          {t('නැවත උත්සාහ කරන්න', 'Try again')}
         </button>
       </div>
     );
   }
 
+  const { headcount, today, tomorrow, by_department, by_post, trend } = snap;
+
+  // The six numbers an executive is asked for first.
+  const tiles = [
+    { k: t('මුළු නිලධාරීන්', 'Total Officers'), v: headcount.total,
+      sub: `${headcount.office} ${t('කාර්යාලීය', 'office')} · ${headcount.field} ${t('ක්ෂේත්‍ර', 'field')}`,
+      tone: 'text-slate-800' },
+    { k: t('සක්‍රීය නිලධාරීන්', 'Active Officers'), v: headcount.active,
+      sub: t('දිගු නිවාඩු හැර', 'excludes long leave'), tone: 'text-blue-600' },
+    { k: t('දිගු නිවාඩු', 'On Long Leave'), v: headcount.on_long_leave,
+      sub: upcoming.length ? `${upcoming.length} ${t('ඉදිරියේදී', 'upcoming')}` : t('දැනට', 'currently away'),
+      tone: 'text-violet-600' },
+    { k: t('අද පැමිණ ඇත', 'Present Today'), v: today.present,
+      sub: today.half_day ? `${today.half_day} ${t('අර්ධ දින', 'half day')}` : `${t('අපේක්ෂිත', 'of')} ${today.expected}`,
+      tone: 'text-emerald-600' },
+    { k: t('අද නිවාඩු', 'On Leave Today'), v: today.on_leave,
+      sub: today.no_record ? `${today.no_record} ${t('වාර්තාවක් නැත', 'no record')}` : t('අනුමත නිවාඩු', 'approved leave'),
+      tone: 'text-amber-600' },
+    { k: t('අද පැමිණීමේ අනුපාතය', 'Attendance Rate'), v: today.attendance_rate === null ? '—' : `${today.attendance_rate}%`,
+      sub: `${t('මස 1 සාමාන්‍යය', '30-day avg')} ${snap.average_rate_30d}%`, tone: 'text-indigo-600' },
+  ];
+
   return (
-    <div className="min-h-screen bg-[#0a0e17] text-white p-6 md:p-12 space-y-12 font-sans animate-fade-in pb-32">
-      {/* Cinematic Command Header */}
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-6 border-b border-white/5 pb-10">
-        <div className="space-y-4">
-          <div className="flex items-center gap-3">
-             <div className="relative">
-                <span className="bg-blue-500 w-3 h-3 rounded-full animate-ping absolute inset-0"></span>
-                <span className="bg-blue-500 w-3 h-3 rounded-full relative block shadow-[0_0_15px_#3b82f6]"></span>
-             </div>
-             <p className="text-[10px] font-black uppercase tracking-[0.5em] text-blue-400">Deep Operational Pulse Active</p>
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 space-y-6 pb-28 animate-fade-in">
+      {/* Header */}
+      <div className="flex flex-col lg:flex-row justify-between items-start lg:items-end gap-4 border-b border-slate-100 pb-5 pt-2">
+        <div>
+          <div className="flex items-center gap-2.5">
+            <span className="w-2 h-2 bg-blue-600 rounded-full animate-pulse" />
+            <p className="text-[10px] font-black text-blue-600 uppercase tracking-[0.3em]">
+              {t('අංශ බුද්ධි කේන්ද්‍රය', 'Division Intelligence')}
+            </p>
           </div>
-          <h2 className="text-6xl font-black tracking-tighter text-transparent bg-clip-text bg-gradient-to-r from-white to-white/40">
-            Divisional Pulse
+          <h2 className="text-3xl sm:text-5xl font-black text-slate-800 tracking-tighter leading-none mt-1">
+            {t('විධායක සාරාංශය', 'Executive Snapshot')}
           </h2>
-          <p className="text-slate-500 font-bold uppercase text-[11px] tracking-[0.3em]">Predictive Efficiency & Operational Foresight Hub</p>
+          <p className="text-[11px] text-slate-400 font-bold uppercase tracking-wider mt-1.5">
+            {fmtDate(snap.date)}
+            {!today.is_working_day && (
+              <span className="ml-2 text-rose-500">
+                · {today.holiday_name || t('නිවාඩු දිනයකි', 'Non-working day')}
+              </span>
+            )}
+          </p>
         </div>
-        <div className="flex gap-4">
-           <button 
-             onClick={() => loadSnapshot()}
-             className="px-8 py-4 bg-white/5 border border-white/10 hover:bg-white/15 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all backdrop-blur-md"
-           >
-             Recalibrate
-           </button>
+        <button
+          onClick={loadSnapshot}
+          className="px-4 py-2.5 min-h-[44px] bg-white border border-slate-200 text-slate-600 rounded-xl text-[10px] font-black uppercase tracking-widest hover:border-slate-300"
+        >
+          ↻ {t('යාවත්කාලීන', 'Refresh')}
+        </button>
+      </div>
+
+      {/* Headline figures. The number is the chart - no plot earns its place here. */}
+      <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3 sm:gap-4">
+        {tiles.map((c) => (
+          <div key={c.k} className="bg-white p-4 sm:p-5 rounded-3xl border border-slate-200/70 shadow-sm">
+            <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-tight">{c.k}</p>
+            <p className={`text-3xl sm:text-4xl font-black tracking-tighter mt-2 tabular-nums ${c.tone}`}>{c.v}</p>
+            <p className="text-[9px] font-bold text-slate-400 mt-1 truncate">{c.sub}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Tomorrow + actionable items */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="lg:col-span-2 bg-slate-900 text-white p-5 sm:p-7 rounded-3xl shadow-lg">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-[9px] font-black text-blue-400 uppercase tracking-widest">
+                {t('හෙට පුරෝකථනය', 'Tomorrow')}
+              </p>
+              <h3 className="text-xl font-black tracking-tight mt-0.5">{fmtDate(tomorrow.date)}</h3>
+            </div>
+            <span className={`px-3 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-widest border ${
+              tomorrow.is_working_day
+                ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                : 'bg-rose-500/10 text-rose-400 border-rose-500/20'
+            }`}>
+              {tomorrow.is_working_day ? t('වැඩ කරන දිනයකි', 'Working day') : (tomorrow.holiday_name || t('නිවාඩු', 'Holiday'))}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-6">
+            {[
+              { k: t('අපේක්ෂිත පැමිණීම', 'Expected in'), v: tomorrow.expected_present, tone: 'text-emerald-400' },
+              { k: t('අනුමත නිවාඩු', 'On leave'), v: tomorrow.on_leave, tone: 'text-amber-400' },
+              { k: t('දිගු නිවාඩු', 'Long leave'), v: tomorrow.on_long_leave, tone: 'text-violet-400' },
+              { k: t('නැවත පැමිණේ', 'Returning'), v: tomorrow.returning, tone: 'text-blue-400' },
+            ].map((m) => (
+              <div key={m.k} className="bg-white/5 rounded-2xl p-3">
+                <p className={`text-2xl font-black tabular-nums ${m.tone}`}>{m.v}</p>
+                <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mt-1 leading-tight">{m.k}</p>
+              </div>
+            ))}
+          </div>
+
+          {!tomorrow.is_working_day && (
+            <p className="text-[10px] text-slate-400 font-bold mt-4">
+              {t('හෙට වැඩ නොකරන දිනයක් බැවින් පැමිණීමක් අපේක්ෂා නොකෙරේ.',
+                 'Tomorrow is not a working day, so no attendance is expected.')}
+            </p>
+          )}
+        </div>
+
+        <div className="bg-white p-5 sm:p-7 rounded-3xl border border-slate-200/70 shadow-sm flex flex-col justify-between">
+          <div>
+            <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">
+              {t('ඔබගේ අවධානයට', 'Needs your attention')}
+            </p>
+            <p className="text-5xl font-black text-amber-500 tracking-tighter mt-3 tabular-nums">
+              {snap.pending_approvals}
+            </p>
+            <p className="text-[11px] font-bold text-slate-500 mt-1">
+              {t('අනුමැතිය බලාපොරොත්තු වන නිවාඩු', 'leave requests awaiting approval')}
+            </p>
+          </div>
+          {today.no_record > 0 && today.is_working_day && (
+            <p className="text-[10px] font-bold text-slate-400 mt-5 pt-4 border-t border-slate-100 leading-relaxed">
+              {today.no_record} {t('නිලධාරීන්ට අද කිසිදු පැමිණීමේ වාර්තාවක් නොමැත.',
+                                   'officers have no attendance record for today yet.')}
+            </p>
+          )}
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-        
-        {/* Left Column: Risk Heatmap & Gauges */}
-        <div className="lg:col-span-4 space-y-8">
-          <div className="bg-white/[0.03] backdrop-blur-3xl border border-white/10 rounded-[3.5rem] p-10 space-y-10 relative overflow-hidden group">
-             <div className="absolute top-0 right-0 w-32 h-32 bg-red-500/10 blur-[80px] rounded-full -mr-10 -mt-10 group-hover:bg-red-500/20 transition-all"></div>
-             
-             <h3 className="text-sm font-black uppercase tracking-widest text-slate-400 flex items-center gap-3 relative z-10">
-               <span className="text-red-500">🔥</span> {t('අවදානම් සිතියම', 'Critical Risk Mapping')}
-             </h3>
-             
-             <div className="h-64 w-full relative z-10">
-                <ChartErrorBoundary>
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={snapshot.depts} layout="vertical">
-                      <XAxis type="number" hide />
-                      <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 10, fontWeight: 900}} width={70} />
-                      <Tooltip 
-                        cursor={{fill: 'rgba(255,255,255,0.05)'}}
-                        contentStyle={{backgroundColor: '#0f172a', border: 'none', borderRadius: '15px', color: '#fff'}}
-                        itemStyle={{color: '#3b82f6', fontWeight: 900}}
-                      />
-                      <Bar dataKey="risk" radius={[0, 10, 10, 0]} barSize={24}>
-                        {snapshot.depts.map((entry: any, index: number) => (
-                          <Cell key={`cell-${index}`} fill={entry.risk > 50 ? '#ef4444' : '#3b82f6'} fillOpacity={entry.risk / 100 + 0.2} />
-                        ))}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                </ChartErrorBoundary>
-             </div>
-
-             <div className="space-y-4 relative z-10">
-                {snapshot.depts.map((d: any) => (
-                  <div key={d.name} className="flex items-center justify-between p-5 bg-white/5 rounded-2xl border border-white/5 group hover:bg-white/10 transition-all cursor-default">
-                     <div className="flex flex-col">
-                        <span className="text-[10px] font-black uppercase tracking-widest text-white/80 group-hover:text-white transition-colors">{d.name}</span>
-                        <span className="text-[9px] font-bold text-slate-500">{d.tasks} {t('පවතින රාජකාරි', 'PENDING TASKS')}</span>
-                     </div>
-                     <div className="flex flex-col items-end">
-                        <span className={`text-xl font-black tracking-tighter ${d.risk > 50 ? 'text-red-400' : 'text-blue-400'}`}>{d.risk}%</span>
-                        <div className="w-16 h-1.5 bg-white/10 rounded-full mt-1 overflow-hidden">
-                           <div className={`h-full rounded-full ${d.risk > 50 ? 'bg-red-500' : 'bg-blue-500'}`} style={{width: `${d.risk}%`}}></div>
-                        </div>
-                     </div>
-                  </div>
-                ))}
-             </div>
+      {/* Attendance over time. One series, so the title names it and no legend
+          box is needed; the plot stays thin and the grid recessive. */}
+      <div className="bg-white p-5 sm:p-7 rounded-3xl border border-slate-200/70 shadow-sm">
+        <div className="flex items-baseline justify-between gap-3 flex-wrap">
+          <div>
+            <h3 className="text-base font-black text-slate-800 tracking-tight">
+              {t('පැමිණීමේ අනුපාතය — පසුගිය දින 30', 'Attendance rate — last 30 days')}
+            </h3>
+            <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mt-0.5">
+              {t('වැඩ කරන දින පමණි', 'Working days only')}
+            </p>
           </div>
+          <p className="text-2xl font-black text-indigo-600 tabular-nums">{snap.average_rate_30d}%</p>
+        </div>
 
-          <div className="grid grid-cols-2 gap-6">
-             <div className="bg-white/5 rounded-[2.5rem] p-8 border border-white/10 text-center space-y-2">
-                <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Velocity index</p>
-                <h4 className="text-4xl font-black tracking-tighter text-emerald-400">{snapshot.divisionalVelocity}</h4>
-                <p className="text-[8px] font-bold text-slate-600 uppercase">Files / Officer / Hr</p>
-             </div>
-             <div className="bg-white/5 rounded-[2.5rem] p-8 border border-white/10 text-center space-y-2">
-                <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Burnout Risk</p>
-                <h4 className={`text-4xl font-black tracking-tighter ${snapshot.burnoutScore > 50 ? 'text-amber-400' : 'text-blue-400'}`}>{snapshot.burnoutScore}%</h4>
-                <p className="text-[8px] font-bold text-slate-600 uppercase">Institutional Stress</p>
-             </div>
+        {trend.length === 0 ? (
+          <p className="py-14 text-center text-[11px] font-black text-slate-400 uppercase tracking-widest">
+            {t('ප්‍රවණතාවක් පෙන්වීමට ප්‍රමාණවත් දත්ත නොමැත', 'Not enough attendance data to draw a trend')}
+          </p>
+        ) : (
+          <ChartErrorBoundary>
+            <div className="h-56 sm:h-64 mt-5 -ml-3">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={trend} margin={{ top: 6, right: 8, bottom: 0, left: 0 }}>
+                  <defs>
+                    <linearGradient id="attendanceFill" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="#4f46e5" stopOpacity={0.22} />
+                      <stop offset="100%" stopColor="#4f46e5" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid stroke="#e2e8f0" strokeWidth={1} vertical={false} />
+                  <XAxis
+                    dataKey="day"
+                    tick={{ fontSize: 10, fill: '#94a3b8', fontWeight: 700 }}
+                    axisLine={false}
+                    tickLine={false}
+                    interval="preserveStartEnd"
+                    minTickGap={18}
+                  />
+                  <YAxis
+                    tick={{ fontSize: 10, fill: '#94a3b8', fontWeight: 700 }}
+                    axisLine={false}
+                    tickLine={false}
+                    width={34}
+                    domain={[0, 100]}
+                    unit="%"
+                  />
+                  <Tooltip
+                    cursor={{ stroke: '#94a3b8', strokeWidth: 1 }}
+                    contentStyle={{
+                      borderRadius: 14,
+                      border: '1px solid #e2e8f0',
+                      fontSize: 11,
+                      fontWeight: 700,
+                      boxShadow: '0 8px 24px rgba(15,23,42,0.10)',
+                    }}
+                    labelFormatter={(_l, p) => fmtDate(p?.[0]?.payload?.date)}
+                    formatter={(v: any, _n: any, p: any) =>
+                      [`${v}% · ${p?.payload?.present} ${t('නිලධාරීන්', 'officers')}`, t('පැමිණීම', 'Attendance')]
+                    }
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="rate"
+                    stroke="#4f46e5"
+                    strokeWidth={2}
+                    fill="url(#attendanceFill)"
+                    dot={false}
+                    activeDot={{ r: 4, strokeWidth: 2, stroke: '#fff' }}
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </ChartErrorBoundary>
+        )}
+      </div>
+
+      {/* Department coverage. A table, not a pie: four measures per row. */}
+      <div className="bg-white p-5 sm:p-7 rounded-3xl border border-slate-200/70 shadow-sm">
+        <h3 className="text-base font-black text-slate-800 tracking-tight">
+          {t('අංශ අනුව', 'By section')}
+        </h3>
+        <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mt-0.5">
+          {t('සේවක සංඛ්‍යාව සහ අද ආවරණය', 'Headcount and today’s coverage')}
+        </p>
+
+        <div className="mt-5 overflow-x-auto">
+          <table className="w-full min-w-[560px] text-left">
+            <thead>
+              <tr className="text-[9px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">
+                <th className="pb-2.5 pr-3">{t('අංශය', 'Section')}</th>
+                <th className="pb-2.5 px-3 text-right">{t('සේවකයින්', 'Staff')}</th>
+                <th className="pb-2.5 px-3 text-right">{t('පැමිණ', 'Present')}</th>
+                <th className="pb-2.5 px-3 text-right">{t('නිවාඩු', 'Leave')}</th>
+                <th className="pb-2.5 px-3 text-right">{t('දිගු', 'Long')}</th>
+                <th className="pb-2.5 pl-3 w-40">{t('ආවරණය', 'Coverage')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {by_department.map((d: any) => (
+                <tr key={d.name} className="border-b border-slate-50 last:border-0">
+                  <td className="py-3 pr-3 text-xs font-black text-slate-700">{d.name}</td>
+                  <td className="py-3 px-3 text-xs font-bold text-slate-600 text-right tabular-nums">{d.headcount}</td>
+                  <td className="py-3 px-3 text-xs font-black text-emerald-600 text-right tabular-nums">{d.present}</td>
+                  <td className="py-3 px-3 text-xs font-bold text-amber-600 text-right tabular-nums">{d.on_leave}</td>
+                  <td className="py-3 px-3 text-xs font-bold text-violet-600 text-right tabular-nums">{d.long_leave}</td>
+                  <td className="py-3 pl-3">
+                    {d.coverage === null ? (
+                      <span className="text-[10px] font-bold text-slate-400">—</span>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                          <div
+                            className={`h-full rounded-full ${
+                              d.coverage >= 80 ? 'bg-emerald-500' : d.coverage >= 50 ? 'bg-amber-500' : 'bg-rose-500'
+                            }`}
+                            style={{ width: `${Math.min(100, d.coverage)}%` }}
+                          />
+                        </div>
+                        <span className="text-[10px] font-black text-slate-600 tabular-nums w-9 text-right">
+                          {d.coverage}%
+                        </span>
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Long leave roster */}
+      <div className="bg-white p-5 sm:p-7 rounded-3xl border border-slate-200/70 shadow-sm">
+        <div className="flex items-baseline justify-between gap-3 flex-wrap">
+          <div>
+            <h3 className="text-base font-black text-slate-800 tracking-tight">
+              {t('දිගුකාලීන නිවාඩු', 'Long-term leave')}
+            </h3>
+            <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mt-0.5">
+              {awayNow.length} {t('දැනට ඉවත්ව', 'away now')} · {upcoming.length} {t('ඉදිරියේදී', 'upcoming')}
+            </p>
           </div>
         </div>
 
-        {/* Right Column: AI Insights & Efficiency Trends */}
-        <div className="lg:col-span-8 space-y-8">
-           {/* Gemini Intelligence Panel */}
-           <div className="bg-gradient-to-br from-blue-600/20 to-indigo-900/40 backdrop-blur-3xl border border-blue-500/20 rounded-[4rem] p-12 relative overflow-hidden group min-h-[500px]">
-              <div className="absolute top-0 right-0 p-8 opacity-10 group-hover:opacity-20 transition-opacity pointer-events-none">
-                <span className="text-[10rem]">✨</span>
-              </div>
-              
-              <div className="relative z-10 h-full flex flex-col">
-                <header className="flex justify-between items-center mb-10">
-                  <div className="space-y-1">
-                    <h3 className="text-3xl font-black tracking-tighter">{t('උපායමාර්ගික වාර්තාව', 'Strategic Intelligence Report')}</h3>
-                    <p className="text-[10px] font-black uppercase tracking-widest text-blue-400">Gemini 3 Pro Deep Analytic Suite</p>
+        {!snap.long_leave.length ? (
+          <div className="py-12 text-center border-2 border-dashed border-slate-100 rounded-2xl mt-5">
+            <p className="text-[11px] font-black text-slate-400 uppercase tracking-widest">
+              {t('දිගුකාලීන නිවාඩු වාර්තා නොමැත', 'No long-term leave recorded')}
+            </p>
+            <p className="text-[10px] text-slate-400 mt-1.5">
+              {t('ජෛවමිතික මධ්‍යස්ථානයේ එකතු කරන්න.', 'Record these in the Biometric Hub.')}
+            </p>
+          </div>
+        ) : (
+          <div className="mt-5 space-y-2.5">
+            {snap.long_leave.map((l: any) => {
+              const label = LONG_LEAVE_LABELS[l.type] || { en: l.type, si: l.type, chip: 'bg-slate-50 text-slate-600 border-slate-200' };
+              return (
+                <div
+                  key={l.id}
+                  className={`flex items-center gap-3 p-3 rounded-2xl border ${
+                    l.status === 'AWAY' ? 'bg-slate-50/70 border-slate-150' : 'bg-white border-dashed border-slate-200'
+                  }`}
+                >
+                  <div className="w-10 h-10 rounded-full bg-slate-200 overflow-hidden shrink-0 flex items-center justify-center">
+                    {l.officer_pic
+                      ? <img src={l.officer_pic} alt="" className="w-full h-full object-cover" />
+                      : <span className="text-[10px] font-black text-slate-500">
+                          {String(l.officer_name || '?').split(/\s+/).slice(0, 2).map((p: string) => p[0]).join('').toUpperCase()}
+                        </span>}
                   </div>
-                  {isAiLoading && (
-                    <div className="flex gap-2">
-                       <span className="w-2.5 h-2.5 bg-blue-400 rounded-full animate-bounce"></span>
-                       <span className="w-2.5 h-2.5 bg-blue-400 rounded-full animate-bounce delay-150"></span>
-                       <span className="w-2.5 h-2.5 bg-blue-400 rounded-full animate-bounce delay-300"></span>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p className="text-xs font-black text-slate-800 truncate">{l.officer_name}</p>
+                      <span className={`shrink-0 px-2 py-0.5 rounded-md text-[8px] font-black uppercase tracking-widest border ${label.chip}`}>
+                        {t(label.si, label.en)}
+                      </span>
                     </div>
-                  )}
-                </header>
-
-                <div className="flex-1">
-                   {isAiLoading ? (
-                     <div className="space-y-6 pt-4">
-                        <Skeleton className="w-full h-4 bg-white/5 rounded-full" />
-                        <Skeleton className="w-11/12 h-4 bg-white/5 rounded-full" />
-                        <Skeleton className="w-full h-4 bg-white/5 rounded-full" />
-                        <Skeleton className="w-4/5 h-4 bg-white/5 rounded-full" />
-                        <Skeleton className="w-full h-4 bg-white/5 rounded-full" />
-                        <div className="pt-10 space-y-4">
-                           <Skeleton className="w-1/2 h-8 bg-white/5 rounded-xl" />
-                           <Skeleton className="w-full h-20 bg-white/5 rounded-3xl" />
-                        </div>
-                     </div>
-                   ) : (
-                     <div className="prose prose-invert max-w-none">
-                        <div className="text-xl leading-relaxed font-medium text-slate-200 animate-fade-in whitespace-pre-wrap selection:bg-blue-500/30">
-                           {aiReport}
-                        </div>
-                     </div>
-                   )}
+                    <p className="text-[10px] font-bold text-slate-400 truncate">
+                      {l.officer_post || l.officer_department || '—'} · {fmtDate(l.start_date)} → {fmtDate(l.end_date)}
+                    </p>
+                  </div>
+                  <div className="text-right shrink-0">
+                    {l.status === 'AWAY' ? (
+                      <>
+                        <p className="text-sm font-black text-slate-700 tabular-nums">{l.days_remaining}</p>
+                        <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest">
+                          {t('දින ඉතිරි', 'days left')}
+                        </p>
+                      </>
+                    ) : (
+                      <>
+                        <p className="text-sm font-black text-blue-600 tabular-nums">{l.starts_in_days}</p>
+                        <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest">
+                          {t('දිනකින්', 'days away')}
+                        </p>
+                      </>
+                    )}
+                  </div>
                 </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
 
-                {!isAiLoading && aiReport && (
-                  <div className="mt-12 flex flex-col sm:flex-row gap-4 pt-10 border-t border-white/5">
-                     <div className="flex-1 p-6 bg-white/5 rounded-3xl border border-white/5 flex items-center justify-between">
-                        <div className="flex items-center gap-4">
-                           <div className="w-10 h-10 bg-emerald-500/20 rounded-xl flex items-center justify-center text-xl">✅</div>
-                           <div>
-                              <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Efficiency Prediction</p>
-                              <p className="text-lg font-black text-emerald-400 uppercase tracking-tighter">Stability Assured</p>
-                           </div>
-                        </div>
-                        <span className="text-[10px] font-black text-slate-700 uppercase">92% Conf.</span>
-                     </div>
-                     <div className="flex-1 p-6 bg-white/5 rounded-3xl border border-white/5 flex items-center justify-between">
-                        <div className="flex items-center gap-4">
-                           <div className="w-10 h-10 bg-blue-500/20 rounded-xl flex items-center justify-center text-xl">🛡️</div>
-                           <div>
-                              <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest">System Resilience</p>
-                              <p className="text-lg font-black text-blue-400 uppercase tracking-tighter">Optimal Range</p>
-                           </div>
-                        </div>
-                        <span className="text-[10px] font-black text-slate-700 uppercase">Active</span>
-                     </div>
-                  </div>
-                )}
+      {/* On leave today */}
+      {snap.on_leave_today.length > 0 && (
+        <div className="bg-white p-5 sm:p-7 rounded-3xl border border-slate-200/70 shadow-sm">
+          <h3 className="text-base font-black text-slate-800 tracking-tight">
+            {t('අද නිවාඩු ලබා සිටින නිලධාරීන්', 'Unavailable today')}
+          </h3>
+          <div className="mt-4 flex flex-wrap gap-2">
+            {snap.on_leave_today.map((o: any) => (
+              <div key={`${o.officer_id}-${o.until}`} className="px-3 py-2 bg-amber-50 border border-amber-200 rounded-xl">
+                <p className="text-[11px] font-black text-amber-900">{o.name}</p>
+                <p className="text-[8px] font-black text-amber-700/70 uppercase tracking-widest">
+                  {o.type} · {t('දක්වා', 'until')} {fmtDate(o.until)}
+                </p>
               </div>
-           </div>
-
-           {/* Performance Trends */}
-           <div className="bg-white/[0.03] backdrop-blur-3xl border border-white/10 rounded-[4rem] p-12 space-y-10">
-              <div className="flex justify-between items-center">
-                 <div className="space-y-1">
-                    <h3 className="text-sm font-black uppercase tracking-widest text-slate-400">{t('සතිපතා කාර්යසාධන වේගය', 'Performance Velocity (Weekly)')}</h3>
-                    <p className="text-[9px] font-bold text-slate-600 uppercase">Predictive Forecasting Enabled</p>
-                 </div>
-                 <div className="flex gap-6">
-                    <div className="flex items-center gap-2">
-                       <span className="w-2 h-2 bg-blue-500 rounded-full"></span>
-                       <span className="text-[8px] font-black uppercase tracking-widest text-slate-500">Recorded</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                       <span className="w-2 h-2 border border-white/20 rounded-full"></span>
-                       <span className="text-[8px] font-black uppercase tracking-widest text-slate-500">Predicted</span>
-                    </div>
-                 </div>
-              </div>
-              <div className="h-72 w-full">
-                <ChartErrorBoundary>
-                  <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={snapshot.efficiency}>
-                      <defs>
-                        <linearGradient id="colorVal" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3}/>
-                          <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
-                        </linearGradient>
-                      </defs>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#ffffff05" vertical={false} />
-                      <XAxis dataKey="day" axisLine={false} tickLine={false} tick={{fill: '#475569', fontSize: 10, fontWeight: 900}} />
-                      <YAxis hide domain={[0, 100]} />
-                      <Tooltip contentStyle={{backgroundColor: '#0f172a', border: 'none', borderRadius: '15px', color: '#fff'}} />
-                      <Area type="monotone" dataKey="value" stroke="#3b82f6" strokeWidth={5} fillOpacity={1} fill="url(#colorVal)" />
-                      <Area type="monotone" dataKey="predicted" stroke="#ffffff20" strokeWidth={2} strokeDasharray="8 8" fill="none" />
-                    </AreaChart>
-                  </ResponsiveContainer>
-                </ChartErrorBoundary>
-              </div>
-           </div>
+            ))}
+          </div>
         </div>
+      )}
+
+      {/* Designation breakdown */}
+      <div className="bg-white p-5 sm:p-7 rounded-3xl border border-slate-200/70 shadow-sm">
+        <button
+          onClick={() => setPostsOpen((o) => !o)}
+          className="w-full flex items-center justify-between gap-3 text-left min-h-[44px]"
+        >
+          <div>
+            <h3 className="text-base font-black text-slate-800 tracking-tight">
+              {t('තනතුර අනුව', 'By designation')}
+            </h3>
+            <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mt-0.5">
+              {by_post.length} {t('වෙනස් තනතුරු', 'distinct posts')}
+            </p>
+          </div>
+          <span className="text-slate-400 text-xs font-black">{postsOpen ? '▲' : '▼'}</span>
+        </button>
+
+        {postsOpen && (
+          <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1">
+            {by_post.map((p: any) => (
+              <div key={p.name} className="flex items-center gap-3 py-2 border-b border-slate-50">
+                <span className="text-xs font-bold text-slate-600 flex-1 truncate">{p.name}</span>
+                <div className="w-20 h-1.5 bg-slate-100 rounded-full overflow-hidden shrink-0">
+                  <div
+                    className="h-full bg-slate-400 rounded-full"
+                    style={{ width: `${Math.round((p.count / (by_post[0]?.count || 1)) * 100)}%` }}
+                  />
+                </div>
+                <span className="text-xs font-black text-slate-800 tabular-nums w-8 text-right">{p.count}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Written briefing */}
+      <div className="bg-white p-5 sm:p-7 rounded-3xl border border-slate-200/70 shadow-sm">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div>
+            <h3 className="text-base font-black text-slate-800 tracking-tight">
+              {t('ලිඛිත සාරාංශය', 'Written briefing')}
+            </h3>
+            <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mt-0.5">
+              {t('ඉහත සංඛ්‍යා මත පදනම්ව', 'Generated from the figures above')}
+            </p>
+          </div>
+          <button
+            onClick={runBriefing}
+            disabled={isAiLoading}
+            className="px-4 py-2.5 min-h-[44px] bg-slate-900 hover:bg-blue-600 disabled:opacity-50 text-white rounded-xl text-[10px] font-black uppercase tracking-widest"
+          >
+            {isAiLoading ? t('සකසමින්…', 'Writing…') : t('සාරාංශය ලියන්න', 'Write briefing')}
+          </button>
+        </div>
+        {aiReport && (
+          <p className="mt-5 text-sm text-slate-600 leading-relaxed whitespace-pre-line">{aiReport}</p>
+        )}
       </div>
     </div>
   );
