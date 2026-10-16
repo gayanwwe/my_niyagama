@@ -310,6 +310,84 @@ export class ApiClient {
   async setAlbumThumbnail(id: string | number, url: string) { return this.request<any>(`/gallery/albums/${id}/thumbnail`, { method: 'POST', body: JSON.stringify({ url }) }); }
 
   async uploadImage(image: string, filename?: string) { return this.request<{ url: string }>('/upload', { method: 'POST', body: JSON.stringify({ image, filename }) }); }
+
+  /**
+   * Same endpoint as uploadImage, but reports how much has gone up.
+   *
+   * fetch() cannot do this: it has no upload progress event, so every upload
+   * through request() is silent until it finishes. On a division connection a
+   * few megabytes of photographs take long enough that silence reads as a
+   * hung page. XMLHttpRequest still exposes upload.onprogress, so this one
+   * call uses it.
+   */
+  uploadImageWithProgress(
+    image: string,
+    filename: string | undefined,
+    onProgress?: (percent: number) => void,
+  ): Promise<{ url: string }> {
+    const token = localStorage.getItem('niyagama_token');
+    const body = JSON.stringify({ image, filename });
+
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', `${BASE_URL}/upload`, true);
+      xhr.setRequestHeader('Content-Type', 'application/json');
+      xhr.setRequestHeader('Accept', 'application/json');
+      const auth = token ? `Bearer ${token}` : 'Bearer public_access_token';
+      xhr.setRequestHeader('Authorization', auth);
+      xhr.setRequestHeader('X-Authorization', auth);
+
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable && onProgress) {
+          onProgress(Math.min(100, Math.round((e.loaded / e.total) * 100)));
+        }
+      };
+
+      // The bytes are up; the server is still writing the file. Report 100 so
+      // the bar fills rather than resting at 98 until the response lands.
+      xhr.upload.onload = () => onProgress?.(100);
+
+      xhr.onload = () => {
+        // 401 is handled the same way request() handles it, so an expired
+        // session during an upload signs the officer out rather than failing
+        // with an opaque error.
+        if (xhr.status === 401) {
+          if (token) {
+            clearSessionAndNotify();
+            reject(new Error('Your session has expired. Please sign in again.'));
+          } else {
+            reject(new Error('Authentication failed.'));
+          }
+          return;
+        }
+
+        let payload: any = null;
+        try { payload = JSON.parse(xhr.responseText); } catch { /* handled below */ }
+
+        if (xhr.status < 200 || xhr.status >= 300) {
+          reject(new Error(payload?.message || `Upload failed (HTTP ${xhr.status})`));
+          return;
+        }
+        if (!payload) {
+          reject(new Error('The server did not return a usable response for this upload.'));
+          return;
+        }
+        if (payload.status === 'error') {
+          reject(new Error(payload.message || 'Upload failed'));
+          return;
+        }
+        // Mirror request(), which hands back the envelope's `data`.
+        resolve(payload.data ?? payload);
+      };
+
+      xhr.onerror = () => reject(new Error('The upload could not reach the server. Check the connection and try again.'));
+      xhr.onabort = () => reject(new Error('Upload cancelled.'));
+      xhr.ontimeout = () => reject(new Error('The upload timed out.'));
+
+      xhr.send(body);
+    });
+  }
+
   async uploadVideoFile(video: string, filename?: string) { return this.request<{ url: string }>('/upload', { method: 'POST', body: JSON.stringify({ video, filename }) }); }
 
   // Dashboard Module

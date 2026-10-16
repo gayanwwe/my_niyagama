@@ -41,6 +41,10 @@ const PublicDashboardControl: React.FC<PublicDashboardControlProps> = ({ user, l
   // Form states
   const [noticeForm, setNoticeForm] = useState({ content: '' });
   const [eventForm, setEventForm] = useState({ title: '', event_date: '', event_time: '', location: '', image_url: '' });
+  /** null when no upload is running; 0-100 while one is. */
+  const [imageUploadPercent, setImageUploadPercent] = useState<number | null>(null);
+  /** The image shown full size over the page, or null. */
+  const [previewImage, setPreviewImage] = useState<{ url: string; title?: string } | null>(null);
   const [videoForm, setVideoForm] = useState({ video_url: '' });
   const [alertForm, setAlertForm] = useState({ message: '' });
 
@@ -818,11 +822,16 @@ const PublicDashboardControl: React.FC<PublicDashboardControlProps> = ({ user, l
     if (!file) return;
     
     setIsSaving(true);
+    setImageUploadPercent(0);
     const reader = new FileReader();
     reader.onloadend = async () => {
       try {
         const base64String = reader.result as string;
-        const { url } = await api.uploadImage(base64String, file.name);
+        const { url } = await api.uploadImageWithProgress(
+          base64String,
+          file.name,
+          setImageUploadPercent,
+        );
         
         if (type === 'event') {
           setEventForm(prev => ({ ...prev, image_url: url }));
@@ -831,10 +840,11 @@ const PublicDashboardControl: React.FC<PublicDashboardControlProps> = ({ user, l
         } else if (type === 'cover' && settings) {
           setSettings(prev => prev ? ({ ...prev, default_cover_pic: url }) : null);
         }
-      } catch (err) {
-        alert("Failed to upload image");
+      } catch (err: any) {
+        alert(err?.message || 'Failed to upload image');
       } finally {
         setIsSaving(false);
+        setImageUploadPercent(null);
       }
     };
     reader.readAsDataURL(file);
@@ -2138,17 +2148,57 @@ const PublicDashboardControl: React.FC<PublicDashboardControlProps> = ({ user, l
                   />
                   <div className="space-y-2">
                     <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">Event Image (Designed JPG)</label>
-                    <div className="flex items-center gap-4">
-                      {eventForm.image_url && (
-                        <img src={eventForm.image_url} className="w-12 h-12 rounded-lg object-cover border" alt="preview" />
-                      )}
-                      <input
-                        type="file"
-                        accept="image/jpeg,image/jpg"
-                        onChange={(e) => handleImageUpload(e, 'event')}
-                        className="text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-[10px] file:font-black file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer"
-                      />
-                    </div>
+
+                    {/* A 48px thumbnail told you an image existed, not what it
+                        was. The lobby screen shows it full-bleed, so the
+                        preview is shown at the shape it will appear in. */}
+                    {eventForm.image_url && (
+                      <div className="relative rounded-2xl overflow-hidden border border-slate-200 bg-slate-50 group">
+                        <img
+                          src={eventForm.image_url}
+                          className="w-full aspect-video object-cover"
+                          alt="Event image preview"
+                        />
+                        <div className="absolute top-2 right-2 flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setPreviewImage({ url: eventForm.image_url, title: eventForm.title || 'Event image' })}
+                            className="px-3 py-2 min-h-[36px] bg-white/90 backdrop-blur rounded-xl text-[9px] font-black uppercase tracking-widest text-slate-700 shadow"
+                          >
+                            Full size
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setEventForm(prev => ({ ...prev, image_url: '' }))}
+                            className="px-3 py-2 min-h-[36px] bg-white/90 backdrop-blur rounded-xl text-[9px] font-black uppercase tracking-widest text-rose-600 shadow"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    <input
+                      type="file"
+                      accept="image/jpeg,image/jpg"
+                      onChange={(e) => handleImageUpload(e, 'event')}
+                      className="w-full text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-[10px] file:font-black file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer"
+                    />
+
+                    {imageUploadPercent !== null && (
+                      <div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Uploading</span>
+                          <span className="text-[11px] font-black text-blue-600 tabular-nums">{imageUploadPercent}%</span>
+                        </div>
+                        <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden mt-1">
+                          <div
+                            className="h-full bg-blue-600 rounded-full transition-[width] duration-150"
+                            style={{ width: `${imageUploadPercent}%` }}
+                          />
+                        </div>
+                      </div>
+                    )}
                   </div>
                   <button disabled={isSaving} className="w-full py-4 bg-[#1877F2] text-white rounded-xl font-black uppercase text-[10px] tracking-widest shadow-lg shadow-blue-500/20 hover:scale-[1.02] active:scale-95 transition-all disabled:opacity-50">
                     {isSaving ? 'Saving...' : 'Add Event'}
@@ -2261,7 +2311,14 @@ const PublicDashboardControl: React.FC<PublicDashboardControlProps> = ({ user, l
                     <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">Birthday Section Image (JPG)</label>
                     <div className="flex items-center gap-4">
                       {settings.birthday_image_url && (
-                        <img src={settings.birthday_image_url} className="w-12 h-12 rounded-lg object-cover border" alt="preview" />
+                        <button
+                          type="button"
+                          onClick={() => setPreviewImage({ url: settings.birthday_image_url as string, title: 'Birthday billboard image' })}
+                          title="View full size"
+                          className="w-12 h-12 rounded-lg overflow-hidden border flex-none hover:ring-4 hover:ring-blue-100 transition-all"
+                        >
+                          <img src={settings.birthday_image_url} className="w-full h-full object-cover" alt="Birthday billboard preview" />
+                        </button>
                       )}
                       <input
                         type="file"
@@ -2336,22 +2393,41 @@ const PublicDashboardControl: React.FC<PublicDashboardControlProps> = ({ user, l
 
             {activeTab === 'events' && events.map(event => (
               <div key={event.id} className="bg-white p-6 rounded-[2rem] shadow-sm border border-slate-100 flex items-center justify-between gap-4">
-                <div className="flex items-center gap-4">
-                  <div className="w-14 h-14 bg-blue-50 rounded-2xl flex flex-col items-center justify-center text-[#1877F2]">
-                    {event.event_date ? (
-                      <>
-                        <span className="text-[10px] font-black uppercase tracking-tighter">{format(new Date(event.event_date), 'MMM')}</span>
-                        <span className="text-xl font-black leading-none">{format(new Date(event.event_date), 'dd')}</span>
-                      </>
-                    ) : (
-                      <Icons.Gallery size={24} className="opacity-40" />
-                    )}
-                  </div>
-                  <div>
-                    <h3 className="font-black text-slate-900">{event.title}</h3>
-                    <div className="flex items-center gap-4 mt-1 text-[11px] font-bold text-slate-400">
+                <div className="flex items-center gap-4 min-w-0">
+                  {/* The image is what the lobby screen actually shows, and the
+                      list never displayed it - so there was no way to tell
+                      which event had one, or what had been uploaded. */}
+                  {event.image_url ? (
+                    <button
+                      type="button"
+                      onClick={() => setPreviewImage({ url: event.image_url as string, title: event.title })}
+                      title="View full size"
+                      className="w-14 h-14 rounded-2xl overflow-hidden border border-slate-200 flex-none hover:ring-4 hover:ring-blue-100 transition-all"
+                    >
+                      <img src={event.image_url} alt="" className="w-full h-full object-cover" />
+                    </button>
+                  ) : (
+                    <div className="w-14 h-14 bg-blue-50 rounded-2xl flex flex-col items-center justify-center text-[#1877F2] flex-none">
+                      {event.event_date ? (
+                        <>
+                          <span className="text-[10px] font-black uppercase tracking-tighter">{format(new Date(event.event_date), 'MMM')}</span>
+                          <span className="text-xl font-black leading-none">{format(new Date(event.event_date), 'dd')}</span>
+                        </>
+                      ) : (
+                        <Icons.Gallery size={24} className="opacity-40" />
+                      )}
+                    </div>
+                  )}
+                  <div className="min-w-0">
+                    <h3 className="font-black text-slate-900 truncate">{event.title}</h3>
+                    <div className="flex items-center gap-4 mt-1 text-[11px] font-bold text-slate-400 flex-wrap">
                       <span className="flex items-center gap-1.5"><Icons.Clock size={12} /> {event.event_time}</span>
                       <span className="flex items-center gap-1.5"><Icons.Map size={12} /> {event.location}</span>
+                      {!event.image_url && (
+                        <span className="px-2 py-0.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-md text-[9px] font-black uppercase tracking-widest">
+                          No image
+                        </span>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -2445,6 +2521,33 @@ const PublicDashboardControl: React.FC<PublicDashboardControlProps> = ({ user, l
       )}
     </motion.div>
   </AnimatePresence>
+
+    {/* Full-size preview. The lobby screen shows these images across a whole
+        wall, so judging one from a thumbnail is guesswork. */}
+    {previewImage && (
+      <div
+        onClick={() => setPreviewImage(null)}
+        className="fixed inset-0 z-[300] bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-4 sm:p-10"
+      >
+        <div onClick={(e) => e.stopPropagation()} className="max-w-4xl w-full">
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <p className="text-white font-black uppercase tracking-widest text-[11px] truncate">
+              {previewImage.title || 'Image'}
+            </p>
+            <button
+              onClick={() => setPreviewImage(null)}
+              className="shrink-0 w-10 h-10 min-h-[40px] bg-white/10 hover:bg-white/20 text-white rounded-xl font-black"
+              aria-label="Close preview"
+            >✕</button>
+          </div>
+          <img
+            src={previewImage.url}
+            alt={previewImage.title || ''}
+            className="w-full max-h-[75vh] object-contain rounded-2xl bg-slate-950"
+          />
+        </div>
+      </div>
+    )}
     </div>
   );
 };

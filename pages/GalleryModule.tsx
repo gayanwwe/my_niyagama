@@ -26,7 +26,8 @@ const GalleryModule: React.FC<Props> = ({ user, lang }) => {
   const [isLoading, setIsLoading] = useState(true);
   const [isUploading, setIsUploading] = useState(false);
   const [photoFilter, setPhotoFilter] = useState('');
-  const [uploadProgress, setUploadProgress] = useState({ current: 0, total: 0 });
+  const [uploadProgress, setUploadProgress] = useState({ current: 0, total: 0, percent: 0, name: '' });
+  const [failedUploads, setFailedUploads] = useState<string[]>([]);
   const [photoDims, setPhotoDims] = useState<Record<string | number, {w: number, h: number}>>({});
   
   const [departments, setDepartments] = useState<any[]>([]);
@@ -123,12 +124,15 @@ const GalleryModule: React.FC<Props> = ({ user, lang }) => {
     }
 
     setIsUploading(true);
-    setUploadProgress({ current: 0, total: files.length });
+    setUploadProgress({ current: 0, total: files.length, percent: 0, name: '' });
+    setFailedUploads([]);
+
+    const failures: string[] = [];
 
     for (let i = 0; i < files.length; i++) {
         const file = files[i];
-        setUploadProgress(prev => ({ ...prev, current: i + 1 }));
-        
+        setUploadProgress({ current: i + 1, total: files.length, percent: 0, name: file.name });
+
         try {
             const reader = new FileReader();
             const base64Promise = new Promise<string>((resolve, reject) => {
@@ -137,14 +141,21 @@ const GalleryModule: React.FC<Props> = ({ user, lang }) => {
                 reader.readAsDataURL(file);
             });
             const base64 = await base64Promise;
-            const { url } = await api.uploadImage(base64, file.name);
+            const { url } = await api.uploadImageWithProgress(base64, file.name, (percent) => {
+                setUploadProgress(prev => ({ ...prev, percent }));
+            });
             await api.uploadAlbumPhoto(selectedAlbum.id, url);
         } catch (err: any) {
+            // A silent console.error left the officer believing every photo
+            // had gone up. Failures are named when the run finishes.
             console.error(`Failed to upload ${file.name}`, err);
+            failures.push(file.name);
         }
     }
 
     setIsUploading(false);
+    setUploadProgress({ current: 0, total: 0, percent: 0, name: '' });
+    setFailedUploads(failures);
     loadAlbumDetails(selectedAlbum.id);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
@@ -385,13 +396,81 @@ const GalleryModule: React.FC<Props> = ({ user, lang }) => {
                    <button 
                       onClick={() => fileInputRef.current?.click()}
                       disabled={isUploading}
-                      className="p-3 bg-slate-50 text-slate-400 rounded-full hover:bg-slate-100 transition-colors border border-slate-200"
+                      title={isUploading ? 'Upload in progress' : 'Upload photographs'}
+                      className="p-3 min-h-[44px] min-w-[44px] flex items-center justify-center bg-slate-50 text-slate-400 rounded-full hover:bg-slate-100 disabled:opacity-50 transition-colors border border-slate-200"
                     >
                       <Icons.Upload width={18} />
                     </button>
                  </div>
               </div>
             </div>
+
+            {/* The upload had no visible progress at all: the button greyed out
+                and nothing else happened until every file had finished. On a
+                slow connection a batch of photographs looked like a hung page. */}
+            {isUploading && (
+              <div className="mb-6 p-5 bg-white border border-slate-200 rounded-3xl shadow-sm">
+                <div className="flex items-center justify-between gap-3 flex-wrap">
+                  <div className="min-w-0">
+                    <p className="text-[10px] font-black text-slate-800 uppercase tracking-widest">
+                      Uploading {uploadProgress.current} of {uploadProgress.total}
+                    </p>
+                    <p className="text-[10px] font-bold text-slate-400 truncate max-w-xs mt-0.5">
+                      {uploadProgress.name}
+                    </p>
+                  </div>
+                  <p className="text-xl font-black text-blue-600 tabular-nums">{uploadProgress.percent}%</p>
+                </div>
+
+                {/* This file's bytes */}
+                <div className="h-2 bg-slate-100 rounded-full overflow-hidden mt-3">
+                  <div
+                    className="h-full bg-blue-600 rounded-full transition-[width] duration-150"
+                    style={{ width: `${uploadProgress.percent}%` }}
+                  />
+                </div>
+
+                {/* The batch, so a long run shows movement even mid-file */}
+                {uploadProgress.total > 1 && (
+                  <>
+                    <div className="h-1 bg-slate-100 rounded-full overflow-hidden mt-2">
+                      <div
+                        className="h-full bg-slate-800 rounded-full transition-[width] duration-150"
+                        style={{
+                          width: `${Math.round(
+                            ((uploadProgress.current - 1 + uploadProgress.percent / 100) /
+                              uploadProgress.total) * 100,
+                          )}%`,
+                        }}
+                      />
+                    </div>
+                    <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mt-2">
+                      Whole batch
+                    </p>
+                  </>
+                )}
+              </div>
+            )}
+
+            {failedUploads.length > 0 && !isUploading && (
+              <div className="mb-6 p-5 bg-rose-50 border border-rose-200 rounded-3xl">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-[10px] font-black text-rose-700 uppercase tracking-widest">
+                      {failedUploads.length} photograph{failedUploads.length > 1 ? 's' : ''} did not upload
+                    </p>
+                    <p className="text-[11px] font-bold text-rose-600/80 mt-1 break-words">
+                      {failedUploads.join(', ')}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setFailedUploads([])}
+                    className="shrink-0 w-9 h-9 min-h-[36px] bg-white/70 rounded-xl text-rose-500 font-black"
+                    aria-label="Dismiss"
+                  >✕</button>
+                </div>
+              </div>
+            )}
 
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-6">
               <Gallery
