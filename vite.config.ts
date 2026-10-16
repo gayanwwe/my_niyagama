@@ -18,6 +18,11 @@ export default defineConfig(({ mode }) => {
         registerType: 'autoUpdate',
         includeAssets: ['favicon.svg', 'favicon.ico', 'logo.png', 'icon-192.png', 'icon-512.png'],
         workbox: {
+            // The app bundle passed Workbox's 2 MiB default and failed the
+            // build outright. Raising the ceiling keeps the PWA installable
+            // offline; splitting the routes so the bundle shrinks again is the
+            // real fix and is still outstanding.
+            maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
             // The API must never be served from cache: officers would see stale
             // attendance and leave figures, and a cached 401 would look like a
             // broken login.
