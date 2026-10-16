@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, lazy, Suspense } from 'react';
 import * as ReactRouterDom from 'react-router-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import { UserRole } from './types.ts';
@@ -10,26 +10,50 @@ import ErrorBoundary from './components/ErrorBoundary.tsx';
 import MainTabs from './components/MainTabs';
 import { Toaster, toast } from 'react-hot-toast';
 
-import DashboardOfficer from './pages/DashboardOfficer';
-import DashboardExecutive from './pages/DashboardExecutive';
-import CirclesModule from './pages/CirclesModule';
-import HappyNiyagama from './pages/HappyNiyagama';
-import PhoneBook from './pages/PhoneBook';
-import GalleryModule from './pages/GalleryModule';
-import ProfilePage from './pages/ProfilePage.tsx';
-import OfficialJournal from './pages/OfficialJournal';
-import StaffManagement from './pages/StaffManagement';
-import DivisionalSettings from './pages/DivisionalSettings';
-import SecurityAudit from './pages/SecurityAudit';
-import CircularIntelligence from './pages/CircularIntelligence';
-import LeaveModule from './pages/LeaveModule';
-import ResourceBooking from './pages/ResourceBooking';
-import ExecutiveIntelligence from './pages/ExecutiveIntelligence';
-import NotificationsPage from './pages/NotificationsPage';
-import BiometricManagement from './pages/BiometricManagement';
-import DepartmentMapping from './pages/DepartmentMapping';
-import PublicDashboard from './pages/PublicDashboard';
-import PublicDashboardControl from './pages/PublicDashboardControl';
+/**
+ * Every page is its own chunk.
+ *
+ * Importing all twenty eagerly put the whole application into one 2.1 MB
+ * bundle that each officer downloaded before the first screen could paint -
+ * including the staff register, the audit log and the biometric hub, which
+ * most of them have no role to open. It also dragged recharts in for everyone,
+ * though only Circles and the Executive Snapshot draw a chart.
+ *
+ * Each route now fetches its own code the first time it is opened, and the
+ * browser caches it from then on.
+ */
+const DashboardOfficer = lazy(() => import('./pages/DashboardOfficer'));
+const DashboardExecutive = lazy(() => import('./pages/DashboardExecutive'));
+const CirclesModule = lazy(() => import('./pages/CirclesModule'));
+const HappyNiyagama = lazy(() => import('./pages/HappyNiyagama'));
+const PhoneBook = lazy(() => import('./pages/PhoneBook'));
+const GalleryModule = lazy(() => import('./pages/GalleryModule'));
+const ProfilePage = lazy(() => import('./pages/ProfilePage.tsx'));
+const OfficialJournal = lazy(() => import('./pages/OfficialJournal'));
+const StaffManagement = lazy(() => import('./pages/StaffManagement'));
+const DivisionalSettings = lazy(() => import('./pages/DivisionalSettings'));
+const SecurityAudit = lazy(() => import('./pages/SecurityAudit'));
+const CircularIntelligence = lazy(() => import('./pages/CircularIntelligence'));
+const LeaveModule = lazy(() => import('./pages/LeaveModule'));
+const ResourceBooking = lazy(() => import('./pages/ResourceBooking'));
+const ExecutiveIntelligence = lazy(() => import('./pages/ExecutiveIntelligence'));
+const NotificationsPage = lazy(() => import('./pages/NotificationsPage'));
+const BiometricManagement = lazy(() => import('./pages/BiometricManagement'));
+const DepartmentMapping = lazy(() => import('./pages/DepartmentMapping'));
+const PublicDashboard = lazy(() => import('./pages/PublicDashboard'));
+const PublicDashboardControl = lazy(() => import('./pages/PublicDashboardControl'));
+
+/**
+ * Shown while a route's chunk is in flight. It is deliberately quiet: on a
+ * fast connection it is never seen, and on a slow one a spinner that matches
+ * the page behind it reads better than a flash of empty screen.
+ */
+const RouteFallback: React.FC = () => (
+  <div className="w-full flex flex-col items-center justify-center gap-4 py-24">
+    <div className="w-9 h-9 border-4 border-slate-900 border-t-transparent rounded-full animate-spin" />
+    <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em]">Loading</p>
+  </div>
+);
 
 // Destructure from namespace import to resolve "no exported member" errors
 const { HashRouter, Routes, Route, Link, useLocation, Navigate, useNavigate } = ReactRouterDom;
@@ -205,7 +229,11 @@ const AppContent: React.FC = () => {
   }, []);
 
   if (location.pathname === '/public-dashboard') {
-    return <PublicDashboard />;
+    return (
+      <Suspense fallback={<RouteFallback />}>
+        <PublicDashboard />
+      </Suspense>
+    );
   }
 
   if (!token || !user) return <LoginPage onLogin={handleLogin} />;
@@ -278,7 +306,8 @@ const AppContent: React.FC = () => {
       </nav>
       <main className="flex-1 relative overflow-hidden">
         <div className="h-full overflow-x-hidden overflow-y-auto p-4 md:p-8 lg:p-12 max-w-[1600px] w-full mx-auto">
-          <ErrorBoundary>
+          <ErrorBoundary resetKey={location.pathname}>
+            <Suspense fallback={<RouteFallback />}>
             <Routes location={location}>
               <Route path="/" element={<DashboardOfficer user={user} lang={lang} />} />
               <Route path="/executive" element={<DashboardExecutive user={user} lang={lang} />} />
@@ -302,6 +331,7 @@ const AppContent: React.FC = () => {
               {isDisplayAdmin && <Route path="/admin/dashboard-control" element={<PublicDashboardControl user={user} lang={lang} />} />}
               <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
+            </Suspense>
         </ErrorBoundary>
       </div>
     </main>
