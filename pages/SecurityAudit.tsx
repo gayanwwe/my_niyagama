@@ -37,7 +37,11 @@ const SecurityAudit: React.FC<Props> = ({ lang }) => {
     setIsLoading(true);
     try {
       const res = await api.getAuditLogs();
-      setLogs(res.data); // Paginated response from Laravel
+      // api.request() already unwraps the envelope's `data`, so `res` IS the
+      // array. Reading `res.data` gave undefined, and the first `logs.filter`
+      // threw - this page has never rendered. The comment it carried was left
+      // over from a Laravel backend that no longer exists.
+      setLogs(Array.isArray(res) ? res : []);
     } catch (e) {
       console.error(e);
     } finally {

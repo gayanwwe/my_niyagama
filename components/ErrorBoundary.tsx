@@ -3,6 +3,14 @@ import React, { Component, ErrorInfo, ReactNode } from "react";
 interface Props {
   children: ReactNode;
   fallback?: ReactNode;
+  /**
+   * Change this to clear a caught error - pass the current route. A boundary
+   * holds its error state until something resets it, so one page that threw
+   * went on showing its stack trace over every page the officer opened
+   * afterwards, and only a full reload cleared it. The whole app looked
+   * broken when a single screen was.
+   */
+  resetKey?: string;
 }
 
 interface State {
@@ -22,6 +30,12 @@ class ErrorBoundary extends Component<Props, State> {
 
   public componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     console.error("Uncaught error:", error, errorInfo);
+  }
+
+  public componentDidUpdate(prevProps: Props) {
+    if (this.state.hasError && prevProps.resetKey !== this.props.resetKey) {
+      this.setState({ hasError: false, error: null });
+    }
   }
 
   public render() {
