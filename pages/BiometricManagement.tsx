@@ -77,7 +77,7 @@ const BiometricManagement: React.FC<Props> = ({ user, lang }) => {
   // Filters
   const [filterTerm, setFilterTerm] = useState('');
   const [filterDept, setFilterDept] = useState('ALL');
-  const [viewMode, setViewMode] = useState<'LOGS' | 'REGISTRY_GAPS' | 'LEAVE_MAP' | 'INSTITUTIONAL_MAP' | 'HOLIDAYS' | 'LONG_LEAVE'>('LOGS');
+  const [viewMode, setViewMode] = useState<'LOGS' | 'REGISTRY_GAPS' | 'LEAVE_MAP' | 'INSTITUTIONAL_MAP' | 'HOLIDAYS' | 'LONG_LEAVE' | 'JOIN_DATES'>('LOGS');
   const [holidays, setHolidays] = useState<any[]>([]);
   const [newHoliday, setNewHoliday] = useState({ date: '', name: '' });
 
@@ -91,6 +91,15 @@ const BiometricManagement: React.FC<Props> = ({ user, lang }) => {
   const [longLeaveSaving, setLongLeaveSaving] = useState(false);
   const [longLeaveError, setLongLeaveError] = useState<string | null>(null);
   const [longLeaveFilter, setLongLeaveFilter] = useState<'CURRENT' | 'ALL'>('CURRENT');
+
+  // Join dates. Leave is inferred from missing scans, so an officer who joined
+  // mid-year was charged for every working day before they existed here. The
+  // column has always been honoured by the calculation - it was simply never
+  // filled in for anyone, which is what made the gap invisible.
+  const [joinDraft, setJoinDraft] = useState<Record<string, string>>({});
+  const [joinSaving, setJoinSaving] = useState<string | null>(null);
+  const [joinFilter, setJoinFilter] = useState<'MISSING' | 'ALL'>('MISSING');
+  const [joinSearch, setJoinSearch] = useState('');
   const [mapSearch, setMapSearch] = useState('');
 
   const [isManualModalOpen, setIsManualModalOpen] = useState(false);
@@ -121,6 +130,8 @@ const BiometricManagement: React.FC<Props> = ({ user, lang }) => {
       loadHolidays();
     } else if (viewMode === 'LONG_LEAVE') {
       loadLongLeaves();
+    } else if (viewMode === 'JOIN_DATES') {
+      loadJoinDates();
     } else {
       loadInitialData();
     }
@@ -170,6 +181,43 @@ const BiometricManagement: React.FC<Props> = ({ user, lang }) => {
       setIsLoading(false);
     }
   };
+
+  const loadJoinDates = async () => {
+    setIsLoading(true);
+    try {
+      const people = await api.getAllStaff();
+      if (Array.isArray(people)) setStaff(people as any);
+    } catch (e) {
+      console.error('Join date load error:', e);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleSaveJoinDate = async (officer: any) => {
+    const value = joinDraft[String(officer.id)];
+    if (!value) return;
+    setJoinSaving(String(officer.id));
+    try {
+      await api.updateStaff(officer.id, { join_date: value });
+      setStaff(prev => prev.map((o: any) => (String(o.id) === String(officer.id) ? { ...o, join_date: value } : o)));
+      setJoinDraft(prev => { const n = { ...prev }; delete n[String(officer.id)]; return n; });
+    } catch (e: any) {
+      alert(e?.message || t('සුරැකීම අසාර්ථකයි.', 'Could not save the join date.'));
+    } finally {
+      setJoinSaving(null);
+    }
+  };
+
+  const joinDateRows = useMemo(() => {
+    const q = joinSearch.trim().toLowerCase();
+    return [...staff]
+      .filter((o: any) => (joinFilter === 'ALL' ? true : !o.join_date))
+      .filter((o: any) => !q || `${o.name} ${o.post || ''} ${o.department || ''}`.toLowerCase().includes(q))
+      .sort((a: any, b: any) => String(a.name).localeCompare(String(b.name)));
+  }, [staff, joinFilter, joinSearch]);
+
+  const missingJoinDates = useMemo(() => staff.filter((o: any) => !o.join_date).length, [staff]);
 
   const visibleLongLeaves = useMemo(() => {
     if (longLeaveFilter === 'ALL') return longLeaves;
@@ -456,6 +504,10 @@ const BiometricManagement: React.FC<Props> = ({ user, lang }) => {
       // Sanctioned leave is not the same as an unexplained absence, so it no
       // longer shares the red used for ABSENT.
       case 'LEAVE': return 'bg-violet-500';
+      // Nothing was ever recorded for these days, so they are not absences:
+      // before the first biometric import, or before the officer joined.
+      case 'NO_DATA': return 'bg-slate-100 border border-dashed border-slate-300';
+      case 'NOT_JOINED': return 'bg-white border border-dashed border-slate-300';
       default: return 'bg-slate-100';
     }
   };
@@ -499,6 +551,7 @@ const BiometricManagement: React.FC<Props> = ({ user, lang }) => {
                   <button onClick={() => setViewMode('LEAVE_MAP')} className={`px-6 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${viewMode === 'LEAVE_MAP' ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20' : 'text-slate-400 hover:text-blue-500'}`}>Registry Map</button>
                   <button onClick={() => setViewMode('HOLIDAYS')} className={`px-6 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${viewMode === 'HOLIDAYS' ? 'bg-yellow-500 text-white shadow-lg shadow-yellow-500/20' : 'text-slate-400 hover:text-yellow-600'}`}>Holidays</button>
                   <button onClick={() => setViewMode('LONG_LEAVE')} className={`px-6 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${viewMode === 'LONG_LEAVE' ? 'bg-violet-600 text-white shadow-lg shadow-violet-600/20' : 'text-slate-400 hover:text-violet-600'}`}>Long Leave</button>
+                  <button onClick={() => setViewMode('JOIN_DATES')} className={`px-6 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${viewMode === 'JOIN_DATES' ? 'bg-teal-600 text-white shadow-lg shadow-teal-600/20' : 'text-slate-400 hover:text-teal-600'}`}>Join Dates</button>
                   <button onClick={() => setViewMode('REGISTRY_GAPS')} className={`px-6 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${viewMode === 'REGISTRY_GAPS' ? 'bg-red-500 text-white shadow-lg shadow-red-500/20' : 'text-slate-400 hover:text-red-500'}`}>Gaps ({stats.missing})</button>
                </div>
              </>
@@ -506,7 +559,7 @@ const BiometricManagement: React.FC<Props> = ({ user, lang }) => {
         </div>
       </div>
 
-      {isManagement && viewMode !== 'INSTITUTIONAL_MAP' && viewMode !== 'LONG_LEAVE' && (
+      {isManagement && viewMode !== 'INSTITUTIONAL_MAP' && viewMode !== 'LONG_LEAVE' && viewMode !== 'JOIN_DATES' && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
           {[
             { label: 'Hardware Hits', val: stats.totalHits, icon: '⚡', color: 'text-slate-900' },
@@ -585,6 +638,8 @@ const BiometricManagement: React.FC<Props> = ({ user, lang }) => {
                 ['MISSING PUNCH', 'bg-amber-400'],
                 ['HOLIDAY', 'bg-yellow-400'],
                 ['WEEKEND', 'bg-slate-200'],
+                ['NO DATA', 'bg-slate-100 border border-dashed border-slate-400'],
+                ['NOT JOINED', 'bg-white border border-dashed border-slate-400'],
               ].map(([label, colour]) => (
                 <div key={label} className="flex items-center gap-2 bg-white border border-slate-200 rounded-full pl-2 pr-3 py-1 shadow-sm">
                   <div className={`w-2.5 h-2.5 rounded-sm ${colour}`}></div>
@@ -641,7 +696,7 @@ const BiometricManagement: React.FC<Props> = ({ user, lang }) => {
                     {entry.days && typeof entry.days === 'object' ? Object.values(entry.days).map((status: any, idx: number) => (
                       <td key={idx} className="p-2 text-center">
                         <div
-                          className={`w-6 h-6 rounded-md mx-auto transition-transform hover:scale-125 cursor-default ${getDayColor(status)} ${status === 'NON_WORKING' ? '' : 'shadow-sm'}`}
+                          className={`w-6 h-6 rounded-md mx-auto transition-transform hover:scale-125 cursor-default ${getDayColor(status)} ${['NON_WORKING', 'NO_DATA', 'NOT_JOINED'].includes(status) ? '' : 'shadow-sm'}`}
                           title={`${entry.name} — ${selectedYear}-${String(selectedMonth).padStart(2, '0')}-${String(idx + 1).padStart(2, '0')}: ${String(status).replace(/_/g, ' ')}`}
                         />
                       </td>
@@ -667,7 +722,7 @@ const BiometricManagement: React.FC<Props> = ({ user, lang }) => {
           {/* A date, a hardware-ID search and a section filter say nothing about
               a leave record that spans months, so this strip stays out of the
               long-leave and holiday views. */}
-          {viewMode !== 'LONG_LEAVE' && viewMode !== 'HOLIDAYS' && (
+          {viewMode !== 'LONG_LEAVE' && viewMode !== 'HOLIDAYS' && viewMode !== 'JOIN_DATES' && (
           <header className="p-8 border-b bg-slate-50 flex flex-wrap items-center gap-6">
             <div className="flex flex-col gap-2">
                 <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Archive Search</span>
@@ -765,6 +820,88 @@ const BiometricManagement: React.FC<Props> = ({ user, lang }) => {
                   ))}
                 </tbody>
               </table>
+            ) : viewMode === 'JOIN_DATES' ? (
+              <div className="p-5 sm:p-10 space-y-6">
+                <div className="bg-slate-50 p-5 sm:p-7 rounded-[2rem] border border-slate-100">
+                  <h4 className="text-sm font-black text-slate-900 uppercase tracking-widest">
+                    {t('සේවයට බැඳුණු දිනය', 'Service Join Dates')}
+                  </h4>
+                  <p className="text-[11px] font-bold text-slate-500 mt-2 leading-relaxed max-w-3xl">
+                    {t('නොපැමිණීම ගණනය වන්නේ ජෛවමිතික සටහනක් නොමැති වැඩ කරන දින ඔස්සේය. එබැවින් නිලධාරියෙකු සේවයට බැඳුණු දිනය සටහන් කර නොමැති නම්, ඔහු සේවයට පැමිණීමට පෙර කාලය ද නොපැමිණීම ලෙස ගණන් ගනී. මෙතැනින් එය නිවැරදි කරන්න.',
+                       'Absence is inferred from working days with no biometric record, so an officer whose join date is blank is charged for every working day before they joined. Setting it here corrects their leave balance.')}
+                  </p>
+
+                  {missingJoinDates > 0 && (
+                    <div className="mt-4 px-4 py-3 bg-amber-50 border border-amber-200 rounded-2xl">
+                      <p className="text-[11px] font-black text-amber-800">
+                        {missingJoinDates} {t('නිලධාරීන්ට සේවයට බැඳුණු දිනය සටහන් කර නොමැත', 'officers have no join date recorded')}
+                      </p>
+                    </div>
+                  )}
+
+                  <div className="flex flex-wrap items-center gap-3 mt-4">
+                    <div className="flex bg-white p-1 rounded-xl border border-slate-200">
+                      {([['MISSING', t('හිස්', 'Missing only')], ['ALL', t('සියල්ල', 'All officers')]] as const).map(([k, label]) => (
+                        <button
+                          key={k}
+                          onClick={() => setJoinFilter(k as any)}
+                          className={`px-4 py-2 min-h-[36px] rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${joinFilter === k ? 'bg-slate-900 text-white' : 'text-slate-500'}`}
+                        >{label}</button>
+                      ))}
+                    </div>
+                    <input
+                      value={joinSearch}
+                      onChange={e => setJoinSearch(e.target.value)}
+                      placeholder={t('නම හෝ අංශය සොයන්න…', 'Search name or section…')}
+                      className="flex-1 min-w-[200px] px-4 py-2.5 min-h-[40px] bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-700"
+                    />
+                  </div>
+                </div>
+
+                {isLoading ? (
+                  <Skeleton className="h-24 w-full rounded-3xl" />
+                ) : joinDateRows.length === 0 ? (
+                  <div className="p-12 text-center border-2 border-dashed border-slate-100 rounded-3xl">
+                    <p className="text-[11px] font-black text-slate-400 uppercase tracking-widest">
+                      {joinFilter === 'MISSING'
+                        ? t('සියලු නිලධාරීන්ට දින සටහන් කර ඇත', 'Every officer has a join date recorded')
+                        : t('නිලධාරීන් නොමැත', 'No officers match')}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                    {joinDateRows.map((o: any) => {
+                      const id = String(o.id);
+                      const current = o.join_date ? String(o.join_date).slice(0, 10) : '';
+                      const draft = joinDraft[id] ?? current;
+                      const dirty = draft && draft !== current;
+                      return (
+                        <div key={id} className={`p-4 bg-white border rounded-2xl flex items-center gap-3 ${o.join_date ? 'border-slate-100' : 'border-amber-200 bg-amber-50/40'}`}>
+                          <div className="min-w-0 flex-1">
+                            <p className="text-xs font-black text-slate-900 truncate">{o.name}</p>
+                            <p className="text-[10px] font-bold text-slate-400 truncate">
+                              {o.post || '—'}{o.department ? ` · ${o.department}` : ''}
+                            </p>
+                          </div>
+                          <input
+                            type="date"
+                            value={draft}
+                            onChange={e => setJoinDraft(prev => ({ ...prev, [id]: e.target.value }))}
+                            className="shrink-0 px-3 py-2 min-h-[40px] bg-slate-50 border border-slate-200 rounded-xl text-[11px] font-bold text-slate-700"
+                          />
+                          <button
+                            onClick={() => handleSaveJoinDate(o)}
+                            disabled={!dirty || joinSaving === id}
+                            className="shrink-0 px-4 py-2 min-h-[40px] bg-slate-900 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-xl text-[10px] font-black uppercase tracking-widest"
+                          >
+                            {joinSaving === id ? '…' : t('සුරකින්න', 'Save')}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             ) : viewMode === 'LONG_LEAVE' ? (
               <div className="p-5 sm:p-10 space-y-8">
                 {/* Record a spell */}

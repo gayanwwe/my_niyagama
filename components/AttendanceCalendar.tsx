@@ -13,6 +13,10 @@ const AttendanceCalendar: React.FC<AttendanceCalendarProps> = ({ user, lang }) =
   const [attendance, setAttendance] = useState<any[]>([]);
   const [holidays, setHolidays] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  /** First date the division has any biometric data for. */
+  const [dataFrom, setDataFrom] = useState<string | null>(null);
+  /** The date this officer joined, if it has been recorded. */
+  const [joinedOn, setJoinedOn] = useState<string | null>(null);
 
   const t = (si: string, en: string) => lang === 'SI' ? si : en;
 
@@ -31,6 +35,8 @@ const AttendanceCalendar: React.FC<AttendanceCalendarProps> = ({ user, lang }) =
         );
         setAttendance(res.attendance || []);
         setHolidays(res.holidays || []);
+        setDataFrom(res.data_from || null);
+        setJoinedOn(res.joined_on || null);
       } catch (error) {
         console.error('Failed to fetch attendance:', error);
       } finally {
@@ -62,7 +68,13 @@ const AttendanceCalendar: React.FC<AttendanceCalendarProps> = ({ user, lang }) =
     if (holiday) return 'bg-yellow-400 text-slate-900 shadow-sm ring-1 ring-yellow-500/20';
     
     if (!att) {
-      // If it's a weekday and in the past, and no data, it's ABSENT/LEAVE as per requirement 3
+      const key = format(day, 'yyyy-MM-dd');
+      // A day before the division's first scan, or before this officer joined,
+      // is not an absence - nothing was ever recorded for it either way.
+      // Painting those red told officers they had been absent for years.
+      if (dataFrom && key < dataFrom) return 'bg-slate-100 text-slate-300 border border-dashed border-slate-300';
+      if (joinedOn && key < joinedOn) return 'bg-slate-100 text-slate-300 border border-dashed border-slate-300';
+
       const dayOfWeek = day.getDay();
       const isWeekday = dayOfWeek >= 1 && dayOfWeek <= 5;
       const isPast = isBefore(startOfDay(day), startOfDay(new Date()));
@@ -178,6 +190,26 @@ const AttendanceCalendar: React.FC<AttendanceCalendarProps> = ({ user, lang }) =
           })}
         </div>
       </div>
+
+      {(dataFrom || joinedOn) && (
+        <p className="text-[10px] font-bold text-slate-400 leading-relaxed pt-3">
+          {joinedOn && (
+            <>
+              {t('ඔබ සේවයට බැඳී ඇත්තේ ', 'You joined on ')}
+              <span className="text-slate-600">{joinedOn}</span>
+              {t(' දිනදීය. ', '. ')}
+            </>
+          )}
+          {dataFrom && (
+            <>
+              {t('ජෛවමිතික දත්ත ', 'Biometric records begin on ')}
+              <span className="text-slate-600">{dataFrom}</span>
+              {t(' සිට ලබා ගත හැකිය. ඊට පෙර දින සඳහා වාර්තාවක් නොමැති බැවින් ඒවා නොපැමිණීම ලෙස ගණන් නොගනී.',
+                 '. Days before that have no record either way, so they are not counted as absence.')}
+            </>
+          )}
+        </p>
+      )}
 
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 pt-4">
         <LegendItem color="bg-emerald-500" label={t('පැමිණි', 'Present')} />

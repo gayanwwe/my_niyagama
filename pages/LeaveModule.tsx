@@ -194,30 +194,21 @@ const LeaveModule: React.FC<Props> = ({ user, lang }) => {
         ))}
       </div>
 
-      {balances?.carried_forward_used > 0 && (
+      {/* Earlier years are no longer spent automatically. The tile shows the
+          year's real position - 24.5/21 when 24.5 days have gone - and this
+          says what earlier years could cover if the office allows it. */}
+      {balances?.excess_days > 0 && (
         <div className="bg-amber-50 border border-amber-100 rounded-[2rem] p-5 flex items-start gap-4">
-          <div className="w-10 h-10 rounded-2xl bg-amber-500 text-white flex items-center justify-center flex-none font-black">↩</div>
+          <div className="w-10 h-10 rounded-2xl bg-amber-500 text-white flex items-center justify-center flex-none font-black">!</div>
           <div>
             <p className="text-[11px] font-black uppercase tracking-widest text-amber-700">
-              {balances.carried_forward_used} {t('දින පෙර වසරින්', 'day(s) drawn from earlier years')}
+              {t('වාර්ෂික දීමනාව ඉක්මවා ඇත', 'Over the year\u2019s allowance')}: {balances.excess_days} {t('දින', 'day(s)')}
             </p>
-            <p className="text-[10px] font-bold text-slate-500 mt-0.5">
-              {(balances.carried_forward_from || []).map((f: any) => `${f.year}: ${f.days}`).join(' · ')}
-              {balances.carried_forward_available > 0 && ` · ${balances.carried_forward_available} ${t('තව ඉතිරි', 'still available')}`}
-            </p>
-          </div>
-        </div>
-      )}
-
-      {balances?.no_pay > 0 && (
-        <div className="bg-red-50 border border-red-100 rounded-[2rem] p-5 flex items-center gap-4">
-          <div className="w-10 h-10 rounded-2xl bg-red-500 text-white flex items-center justify-center flex-none font-black">!</div>
-          <div>
-            <p className="text-[11px] font-black uppercase tracking-widest text-red-600">
-              {t('වැටුප් රහිත දින', 'No-pay days')}: {balances.no_pay}
-            </p>
-            <p className="text-[10px] font-bold text-slate-500 mt-0.5">
-              {t('මෙම වසර සහ පෙර වසර දෙකම අවසන්', 'This year and all carry-forward vacation are fully used')}
+            <p className="text-[10px] font-bold text-slate-500 mt-1 leading-relaxed">
+              {balances.carried_forward_available > 0
+                ? t(`පෙර වසරවල විවේක නිවාඩු ${balances.carried_forward_available} ක් ඉතිරිව ඇත. ඒවායින් අඩු කර ගැනීම නිවාඩු නිලධාරියාගේ තීරණයකි — එය ස්වයංක්‍රීයව සිදු නොවේ.`,
+                     `${balances.carried_forward_available} day(s) of vacation remain unused in earlier years. Drawing on them is the leave officer\u2019s decision \u2014 it is not applied automatically.`)
+                : t('පෙර වසරවල ඉතිරි විවේක නිවාඩු නොමැත.', 'No unused vacation remains in earlier years.')}
             </p>
           </div>
         </div>
@@ -299,7 +290,7 @@ const LeaveModule: React.FC<Props> = ({ user, lang }) => {
               )}
             </p>
             <p className="text-[11px] font-black text-slate-700 mt-2 tabular-nums">
-              {t('ඉදිරියට ගෙන යා හැකි ශේෂය', 'Available to carry forward')}: {balances?.carried_forward_available ?? 0} {t('දින', 'days')}
+              {t('පෙර වසරවල ඉතිරි විවේක නිවාඩු', 'Unused vacation in earlier years')}: {balances?.carried_forward_available ?? 0} {t('දින', 'days')}
             </p>
           </div>
         </div>

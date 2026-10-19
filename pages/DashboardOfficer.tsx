@@ -517,8 +517,11 @@ const DashboardOfficer: React.FC<Props> = ({ user, lang }) => {
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
         <div className="lg:col-span-8 space-y-8">
-          {/* Sinhala User Guide Download Banner */}
-          <div className="bg-gradient-to-r from-blue-50 to-indigo-55 p-8 rounded-[3rem] border border-blue-100 shadow-sm flex flex-col md:flex-row items-center justify-between gap-6">
+          {/* The guide is a desktop errand - it downloads a Word file - and on a
+              phone this banner took most of the first screen before any of the
+              officer's own figures. Hidden below sm; the More menu still
+              reaches everything else. */}
+          <div className="hidden sm:flex bg-gradient-to-r from-blue-50 to-indigo-55 p-8 rounded-[3rem] border border-blue-100 shadow-sm flex-col md:flex-row items-center justify-between gap-6">
             <div className="flex items-center gap-5 text-center md:text-left flex-col md:flex-row">
               <div className="w-16 h-16 rounded-[1.8rem] bg-blue-600 flex items-center justify-center text-white text-3xl shadow-md shadow-blue-500/20 flex-shrink-0 animate-pulse">
                 📝

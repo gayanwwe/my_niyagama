@@ -2078,8 +2078,11 @@ async function startServer() {
       const endDate = `${y}-${String(m).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`;
 
       const calendar = await loadLeaveCalendar();
+      // Nothing can be said about a day the division has no scans for, so those
+      // days are reported as NO_DATA rather than guessed at as ABSENT.
+      const floor = await getAttendanceFloor();
 
-      const officers = await db('officers').select('id', 'name', 'post');
+      const officers = await db('officers').select('id', 'name', 'post', 'join_date');
       const attendance = await db('attendance')
         .whereBetween('date', [startDate, endDate])
         .select('officer_id', 'date', 'status');
@@ -2093,6 +2096,7 @@ async function startServer() {
         .select('officer_id', 'start_date', 'end_date', 'type');
 
       const registry = officers.map(officer => {
+        const joinKey = officer.join_date ? toDateKey(officer.join_date) : null;
         const days: Record<number, string> = {};
         for (let i = 1; i <= daysInMonth; i++) {
           const key = `${y}-${String(m).padStart(2, '0')}-${String(i).padStart(2, '0')}`;
@@ -2100,6 +2104,10 @@ async function startServer() {
           // NON_WORKING are rendered distinctly by the registry grid.
           if (calendar.isHoliday(key)) days[i] = 'HOLIDAY';
           else if (!calendar.isWorkingDay(key)) days[i] = 'NON_WORKING';
+          // Before the division's first scan, or before this officer joined,
+          // there is nothing to report either way.
+          else if (floor && key < floor) days[i] = 'NO_DATA';
+          else if (joinKey && key < joinKey) days[i] = 'NOT_JOINED';
           else days[i] = 'ABSENT';
         }
 
@@ -2136,6 +2144,7 @@ async function startServer() {
         status: 'success', 
         data: {
           daysInMonth,
+          data_from: floor,
           registry
         } 
       });
@@ -2393,11 +2402,21 @@ async function startServer() {
         .whereBetween('date', [startDate, endDate])
         .select('*');
 
+      // The calendar marked every past weekday without a record as absent.
+      // Before the division's first scan - and before this officer joined -
+      // there is no record because none was ever taken, so it says so instead.
+      const [floor, officer] = await Promise.all([
+        getAttendanceFloor(),
+        db('officers').where('id', officerId).first('join_date'),
+      ]);
+
       res.json({ 
         status: 'success', 
         data: {
           attendance,
-          holidays
+          holidays,
+          data_from: floor,
+          joined_on: officer?.join_date ? toDateKey(officer.join_date) : null,
         } 
       });
     } catch (error: any) {
@@ -3546,7 +3565,10 @@ async function startServer() {
         year: y,
         casual,
         casual_total: u.casual_total,
+        // `vacation` stays capped for the per-year history table; the current
+        // year's uncapped figure is what the headline tile shows.
         vacation: Math.min(vacationUsed, u.vacation_total),
+        vacation_used: vacationUsed,
         vacation_total: u.vacation_total,
         vacation_from_casual: overflow,
         // What this year cannot absorb, and what it has left to lend.
@@ -3563,33 +3585,25 @@ async function startServer() {
     const current = history[0];
     const priorYears = history.slice(1);
 
-    // Draw the excess from earlier years, most recent first.
-    let outstanding = current.excess;
-    const drawnFrom: { year: number; days: number }[] = [];
-    for (const prior of priorYears) {
-      if (outstanding <= 0) break;
-      const available = prior.vacation_remaining;
-      if (available <= 0) continue;
-      const take = Math.min(available, outstanding);
-      prior.vacation += take;
-      prior.vacation_remaining -= take;
-      (prior as any).lent_to_current = take;
-      outstanding -= take;
-      drawnFrom.push({ year: prior.year, days: take });
-    }
+    // Earlier years are reported, not spent. Drawing on them is an
+    // administrative decision for the leave officer, so the balance shows the
+    // year's real position - vacation reads 24.5/21 when 24.5 days have gone -
+    // and simply states how much earlier years could cover.
+    const carriedForwardAvailable = priorYears.reduce((sum, p) => sum + p.vacation_remaining, 0);
 
     const base = usages[0];
     return {
       ...base,
       casual: current.casual,
-      vacation: current.vacation,
+      // Uncapped: what was actually taken, even past the entitlement.
+      vacation: current.vacation_used,
       vacation_from_casual: current.vacation_from_casual,
-      // Only what no year can cover is unpaid.
-      no_pay: outstanding,
-      carried_forward_used: current.excess - outstanding,
-      carried_forward_available: priorYears.reduce((sum, p) => sum + p.vacation_remaining, 0),
-      carried_forward_from: drawnFrom,
-      combined_used: current.casual + current.vacation + current.excess,
+      excess_days: current.excess,
+      carried_forward_available: carriedForwardAvailable,
+      // How much of the excess earlier years could absorb if the office
+      // decides to allow it. Nothing is deducted on this figure's account.
+      carried_forward_coverable: Math.min(current.excess, carriedForwardAvailable),
+      combined_used: current.casual + current.vacation_used,
       combined_total: current.casual_total + current.vacation_total,
       history,
     };

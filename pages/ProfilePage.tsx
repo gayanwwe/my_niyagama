@@ -76,7 +76,9 @@ const ProfilePage: React.FC<Props> = ({ user: currentUser, setUser, lang, setLan
     if (!leaveBalance) return 'N/A';
     const casualRemaining = (leaveBalance.casual_total || 21) - (leaveBalance.casual || 0);
     const sickRemaining = (leaveBalance.sick_total || 7) - (leaveBalance.sick || 0);
-    const vacationRemaining = (leaveBalance.vacation_total || 21) - (leaveBalance.vacation || 0);
+    // Vacation is reported uncapped now, so this can go negative; an officer
+    // who is over their allowance has none remaining, not minus three.
+    const vacationRemaining = Math.max(0, (leaveBalance.vacation_total || 21) - (leaveBalance.vacation || 0));
     const total = casualRemaining + sickRemaining + vacationRemaining;
     return total.toFixed(1).replace('.0', '');
   };

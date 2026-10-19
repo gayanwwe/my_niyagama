@@ -179,7 +179,7 @@ const DashboardExecutive: React.FC<Props> = ({ user, lang }) => {
       {/* Executive User Guide Banner */}
       <div
         id="executive-guide-banner"
-        className="bg-gradient-to-r from-blue-600 to-indigo-700 rounded-[2.5rem] p-8 text-white shadow-xl flex flex-col md:flex-row md:items-center justify-between gap-6 relative overflow-hidden"
+        className="hidden sm:flex bg-gradient-to-r from-blue-600 to-indigo-700 rounded-[2.5rem] p-8 text-white shadow-xl flex-col md:flex-row md:items-center justify-between gap-6 relative overflow-hidden"
       >
         <div className="absolute -right-10 -bottom-10 opacity-10 text-[12rem] select-none pointer-events-none">
           📖
