@@ -36,6 +36,8 @@ yarn-debug.log*
 yarn-error.log*
 
 # Editor / OS
+# Word lock files, created whenever a .docx in the repo is opened
+~$*
 .DS_Store
 .vscode/
 .idea/

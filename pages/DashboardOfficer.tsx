@@ -535,8 +535,8 @@ const DashboardOfficer: React.FC<Props> = ({ user, lang }) => {
               </div>
             </div>
             <a 
-              href="/Officer_User_Guide.docx" 
-              download="My_Niyagama_Officer_User_Guide.docx"
+              href="/My_Niyagama_User_Guide.docx" 
+              download="My_Niyagama_User_Guide.docx"
               className="px-8 py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-[2rem] font-black uppercase text-[10px] tracking-widest transition-all shadow-lg shadow-blue-500/20 hover:scale-[1.03] active:scale-95 text-center flex items-center gap-2 whitespace-nowrap"
             >
               <span>📥 {lang === 'SI' ? 'බාගත කරගන්න' : 'Download Guide'}</span>

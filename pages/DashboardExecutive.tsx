@@ -200,8 +200,8 @@ const DashboardExecutive: React.FC<Props> = ({ user, lang }) => {
           </p>
         </div>
         <a
-          href="/Executive_User_Guide.docx"
-          download="MyNiyagama_Executive_User_Guide.docx"
+          href="/My_Niyagama_User_Guide.docx"
+          download="My_Niyagama_User_Guide.docx"
           className="bg-white text-blue-600 px-8 py-4 rounded-2xl text-[11px] font-black uppercase tracking-wider hover:bg-slate-100 transition-all flex items-center gap-2 shadow-xl hover:-translate-y-0.5 justify-center shrink-0"
         >
           <span>📥</span>{" "}
